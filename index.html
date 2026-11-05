@@ -2,6 +2,9 @@
 <html lang="fr">
 <head>
 <meta charset="utf-8">
+<!-- Aucune ressource externe, aucun script ni style en ligne. "file:" sert seulement quand on double-clique sur index.html. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file:; img-src 'self' file:; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Carnet — Mon argent</title>
 <meta name="description" content="Note tes dépenses et rentrées, vois ce qu'il te reste pour vivre jusqu'à la fin du mois.">
@@ -11,13 +14,10 @@
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="Carnet">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
-<div class="app">
+<div class="app" id="app" hidden>
   <header class="top">
     <div class="brand">Carnet<small>Mon argent</small></div>
     <div class="month" role="group" aria-label="Changer de mois">
@@ -26,29 +26,41 @@
       <button id="nextM" aria-label="Mois suivant">›</button>
     </div>
   </header>
-  <main id="view" class="stack" style="gap:18px"></main>
+  <main id="view" class="stack gap18"></main>
   <p class="note" id="storeNote"></p>
 </div>
 
-<button class="fab" id="fab" aria-label="Ajouter une opération"><span>+</span>Ajouter</button>
-<nav class="nav" aria-label="Sections"><div>
+<button class="fab" id="fab" aria-label="Ajouter une opération" hidden><span>+</span>Ajouter</button>
+<nav class="nav" id="nav" aria-label="Sections" hidden><div>
   <button data-tab="mois" aria-current="page">Mon mois</button>
   <button data-tab="ops">Opérations</button>
   <button data-tab="budgets">Budgets</button>
+  <button data-tab="reglages">Réglages</button>
 </div></nav>
 
+<div class="lock" id="lock" hidden>
+  <form class="lockbox" id="lockForm" novalidate>
+    <div class="brand">Carnet<small>Mon argent</small></div>
+    <p class="hint">Ton carnet est verrouillé. Tes données restent chiffrées tant que le mot de passe n'est pas saisi.</p>
+    <label class="f">Mot de passe<input id="lockPw" type="password" autocomplete="current-password" maxlength="256"></label>
+    <p class="err" id="lockErr" role="alert" hidden></p>
+    <button type="submit" class="btn" id="lockOk">Déverrouiller</button>
+    <button type="button" class="link" id="lockReset">Mot de passe oublié ?</button>
+  </form>
+</div>
+
 <div class="veil" id="veil" hidden>
-  <form class="sheet" id="sheet" novalidate>
+  <form class="sheet" id="sheet" role="dialog" aria-modal="true" aria-labelledby="shTitle" novalidate>
     <div class="row"><h3 id="shTitle">Nouvelle opération</h3><button type="button" class="link" id="shClose">Fermer</button></div>
-    <div id="shOp" class="stack" style="gap:14px">
+    <div id="shOp" class="stack gap14">
       <div class="seg" id="shType">
         <button type="button" data-t="out" aria-pressed="true">Dépense</button>
         <button type="button" data-t="in" aria-pressed="false">Rentrée d'argent</button>
       </div>
       <div class="amount"><input id="fAmount" inputmode="decimal" placeholder="0,00" autocomplete="off" aria-label="Montant"><em>€</em></div>
-      <div class="stack" style="gap:6px"><span class="day" style="padding:0">Catégorie</span><div class="chips" id="fCats"></div></div>
+      <div class="stack gap6"><span class="day flush">Catégorie</span><div class="chips" id="fCats"></div></div>
       <div class="grid2">
-        <label class="f">Libellé<input id="fLabel" placeholder="ex. Courses Lidl" maxlength="60"></label>
+        <label class="f">Libellé<input id="fLabel" placeholder="ex. Courses Lidl" maxlength="60" autocomplete="off"></label>
         <label class="f" id="fDateWrap">Date<input id="fDate" type="date"></label>
       </div>
     </div>
@@ -56,14 +68,27 @@
       <p class="hint" id="bHint"></p>
       <div class="amount"><input id="bAmount" inputmode="decimal" placeholder="0" autocomplete="off" aria-label="Plafond mensuel"><em>€ / mois</em></div>
     </div>
-    <p class="err" id="shErr" hidden></p>
+    <div id="shGoal" class="stack gap14" hidden>
+      <label class="f">Nom de l'objectif<input id="gLabel" placeholder="ex. Vacances, matelas de sécurité" maxlength="60" autocomplete="off"></label>
+      <div class="grid2">
+        <label class="f">Montant visé (€)<input id="gTarget" inputmode="decimal" placeholder="1 000" autocomplete="off"></label>
+        <label class="f">Déjà mis de côté (€)<input id="gSaved" inputmode="decimal" placeholder="0" autocomplete="off"></label>
+      </div>
+    </div>
+    <div id="shPass" class="stack gap14" hidden>
+      <p class="hint" id="pHint"></p>
+      <label class="f" id="pCurWrap"><span id="pCurLabel">Mot de passe actuel</span><input id="pCur" type="password" autocomplete="current-password" maxlength="256"></label>
+      <label class="f" id="pNewWrap"><span id="pNewLabel">Nouveau mot de passe</span><input id="pNew" type="password" autocomplete="new-password" maxlength="256"></label>
+      <label class="f" id="pNew2Wrap">Répète-le<input id="pNew2" type="password" autocomplete="new-password" maxlength="256"></label>
+    </div>
+    <p class="err" id="shErr" role="alert" hidden></p>
     <div class="actions">
       <button type="button" class="btn danger" id="shDel" hidden>Supprimer</button>
       <button type="submit" class="btn" id="shOk">Ajouter</button>
     </div>
   </form>
 </div>
-<div class="toast" id="toast" hidden></div>
+<div class="toast" id="toast" role="status" hidden></div>
 <input type="file" id="importFile" accept="application/json,.json" hidden>
 
 <script src="js/app.js"></script>

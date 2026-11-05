@@ -122,7 +122,7 @@ button{font:inherit;color:inherit;cursor:pointer}
 /* nav + fab */
 .nav{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--surface);border-top:1px solid var(--line);
   padding:6px max(16px,env(safe-area-inset-right,0px)) calc(6px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
-.nav div{max-width:560px;margin:0 auto;display:grid;grid-template-columns:repeat(3,1fr)}
+.nav div{max-width:560px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr)}
 .nav button{border:0;background:transparent;padding:8px 4px;font-size:13px;font-weight:600;color:var(--muted);border-radius:10px;display:flex;flex-direction:column;align-items:center;gap:3px}
 .nav button::before{content:"";width:22px;height:3px;border-radius:3px;background:transparent}
 .nav button[aria-current="page"]{color:var(--ink)}
@@ -156,3 +156,39 @@ label.f input{font:inherit;font-size:16px;font-weight:400;color:var(--ink);backg
 .err{color:var(--bad);font-size:13px;margin:0}
 .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(140px + env(safe-area-inset-bottom,0px));z-index:60;background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:12px;font-size:14px;font-weight:500;max-width:calc(100% - 32px)}
 .note{font-size:12.5px;color:var(--muted);text-align:center;margin:0}
+
+/* utilitaires (la CSP interdit les attributs style dans le HTML) */
+.gap6{gap:6px}.gap14{gap:14px}.gap18{gap:18px}
+.flush{padding:0}
+.pull{margin-top:-6px}
+.sec-h.plain{text-transform:none}
+.row.tight{padding:0 2px}
+.dot.inl{display:inline-block;margin-right:6px}
+
+/* recherche */
+.search{font:inherit;font-size:16px;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:11px 12px;width:100%}
+.opdate{font-variant-numeric:tabular-nums}
+
+/* évolution sur 6 mois */
+.trend{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:2px}
+.trend button{border:0;background:transparent;border-radius:10px;padding:4px 2px;display:flex;flex-direction:column;align-items:center;gap:4px;min-width:0}
+.trend button:hover{background:var(--sunk)}
+.trend button[aria-current="true"] .tm{color:var(--ink);font-weight:700}
+.trend .tv{font-size:11.5px;font-weight:600;white-space:nowrap}
+.trend .tm{font-size:11.5px;color:var(--muted);text-transform:capitalize}
+.trend .plot{width:100%;height:96px;display:grid;grid-template-rows:var(--up,1fr) var(--down,0fr);justify-items:center}
+.trend .pos,.trend .neg{width:16px;min-height:0;position:relative}
+.trend .pos{border-bottom:1px solid var(--line)}
+.trend .pos i,.trend .neg i{position:absolute;left:0;right:0;display:block}
+.trend .pos i{bottom:0;background:var(--accent);border-radius:4px 4px 0 0}
+.trend .neg i{top:0;background:var(--bad);border-radius:0 0 4px 4px}
+
+/* réglages */
+.setting{display:flex;flex-direction:column;gap:8px}
+.state{font-size:13.5px;font-weight:600}
+
+/* écran de verrouillage */
+.lock{position:fixed;inset:0;z-index:70;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:16px;overflow:auto}
+.lockbox{background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:22px;width:100%;max-width:400px;display:flex;flex-direction:column;gap:14px}
+.btn:disabled{opacity:.6;cursor:progress}
+@media (max-width:380px){.grid2{grid-template-columns:1fr}}

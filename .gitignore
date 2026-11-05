@@ -4,3 +4,6 @@ Thumbs.db
 .idea/
 node_modules/
 *.log
+# Tes sauvegardes contiennent tes données : elles ne doivent jamais partir sur GitHub.
+carnet-sauvegarde-*.json
+carnet-operations-*.csv

@@ -6,7 +6,12 @@ Petite appli perso pour gérer son argent au quotidien : on note ses dépenses e
 - **Dépenses** ajoutées en deux secondes (montant, catégorie, libellé, date).
 - **Jauge de rythme** : compare ce qui est dépensé à la part du mois déjà passée.
 - **Plafonds par catégorie** qui passent en orange puis en rouge.
-- **Sauvegarde** : export et import d'un fichier JSON.
+- **Objectifs d'épargne** avec barre de progression.
+- **Évolution sur 6 mois** de ce qu'il reste en fin de mois.
+- **Recherche** dans les opérations de tous les mois.
+- **Verrouillage par mot de passe** : les données sont chiffrées sur l'appareil.
+- **Sauvegarde** : export et import d'un fichier JSON, chiffré ou non, et export CSV pour Excel.
+- **Thème** clair, sombre ou comme l'appareil.
 - **Installable sur le téléphone** et utilisable hors-ligne (PWA).
 
 Aucun framework, aucune installation : du HTML, du CSS et du JavaScript.
@@ -66,17 +71,41 @@ Antigravity peut aussi le faire pour toi depuis l'onglet *Source Control*.
 Dans le navigateur de l'appareil (`localStorage`). Elles ne partent nulle part. Conséquences :
 
 - Le PC et le téléphone ont chacun leurs propres données.
-- Si tu vides les données du navigateur, tu les perds. **Exporte une sauvegarde de temps en temps** (onglet *Budgets > Sauvegarde*), et importe-la pour les retrouver sur un autre appareil.
+- Si tu vides les données du navigateur, tu les perds. **Exporte une sauvegarde de temps en temps** (onglet *Réglages > Sauvegarde*), et importe-la pour les retrouver sur un autre appareil.
+
+## Sécurité
+
+**Ce qui est en place**
+
+- **Chiffrement** (si tu actives le verrouillage dans *Réglages*) : AES-256-GCM, clé dérivée du mot de passe avec PBKDF2-SHA256 (600 000 itérations). Ni le mot de passe ni la clé ne sont enregistrés.
+- **Verrouillage automatique** après 5 minutes sans activité, ou 1 minute après avoir quitté l'appli. Les données sont alors retirées de la page.
+- **Politique CSP stricte** : aucun script en ligne, aucune ressource externe, aucune requête réseau depuis la page.
+- **Aucun tiers** : pas de pisteur, pas de police Google, pas de serveur.
+- **Fichiers et stockage considérés comme non fiables** : tout est validé au chargement. Un fichier piégé ne peut ni injecter de code ni bloquer l'appli.
+- **Export CSV** protégé contre l'injection de formules dans Excel.
+- **Protection contre l'affichage dans le cadre d'un autre site**.
+
+**Ce que ça ne protège pas**
+
+Aucune appli ne peut promettre zéro faille, et voici les limites de celle-ci :
+
+- **Sans verrouillage**, les données sont en clair dans le navigateur.
+- **Une fois le carnet déverrouillé**, un virus sur l'appareil ou une extension de navigateur malveillante peut lire ce qui est affiché.
+- **Un mot de passe faible se devine** : quelqu'un qui copie tes données peut tester des mots de passe sans limite sur sa machine. Prends une longue phrase.
+- **Mot de passe oublié = données perdues**. C'est le prix du chiffrement : garde une sauvegarde.
+- **Les données peuvent être effacées** par quelqu'un qui a accès au navigateur, même verrouillé. Le chiffrement les rend illisibles, pas indestructibles.
+- **Sur `github.io`**, tous tes projets partagent la même origine : une autre de tes pages pourrait accéder au stockage de Carnet. Avec le verrouillage, elle ne verrait que des données chiffrées, mais ne publie pas sur ce compte de code auquel tu ne fais pas confiance.
+- **GitHub Pages ne permet pas d'envoyer d'en-têtes de sécurité** personnalisés. La CSP passe donc par une balise `<meta>`.
+
+**Si tu publies le code** : les fichiers de sauvegarde sont exclus par `.gitignore`, ne les ajoute jamais au dépôt. Active aussi la double authentification sur ton compte GitHub : qui contrôle ton compte contrôle le code de l'appli, et pourrait y glisser de quoi lire tes données une fois déverrouillées.
 
 ## Publier une nouvelle version
 
-Après une modification, change le numéro dans `sw.js` (`carnet-v1` → `carnet-v2`), puis commit et push. Le téléphone récupère la nouvelle version à la prochaine ouverture.
+Après une modification, augmente le numéro dans `sw.js` (`carnet-v2` → `carnet-v3`), puis commit et push. Le téléphone récupère la nouvelle version à la prochaine ouverture.
 
 ## Idées pour la suite
 
 À demander à l'assistant d'Antigravity, par exemple :
 
 - « Ajoute l'import d'un relevé CSV de ma banque, avec catégorisation automatique par mots-clés. »
-- « Ajoute un graphique de l'évolution de ce qu'il me reste en fin de mois, sur 6 mois. »
-- « Ajoute des objectifs d'épargne avec une barre de progression. »
-- « Ajoute une recherche dans les opérations. »
+- « Quand je supprime ou modifie un fixe, garde l'ancien montant pour les mois passés. »
