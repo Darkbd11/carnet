@@ -1,8 +1,9 @@
 // Service worker : permet d'ouvrir Carnet sans connexion.
 // Change CACHE à chaque mise en ligne d'une nouvelle version pour forcer la mise à jour.
 const PREFIX = "carnet-";
-const CACHE = PREFIX + "v4";
+const CACHE = PREFIX + "v5";
 const FILES = ["./", "index.html", "css/style.css", "js/app.js", "manifest.webmanifest",
+  "fonts/bricolage-grotesque.woff2", "fonts/instrument-sans.woff2",
   "icons/icon.svg", "icons/icon-192.png", "icons/icon-512.png", "icons/icon-maskable-512.png"];
 
 self.addEventListener("install", e => {

@@ -2,8 +2,12 @@
 
 Petite appli perso pour gérer son argent au quotidien : on note ses dépenses et ses rentrées, et Carnet calcule **ce qu'il reste pour vivre jusqu'à la fin du mois, et combien ça fait par jour**.
 
-- **Fixes mensuels** : salaire, aides, loyer, forfait, box… notés une fois, comptés chaque mois. Changer un montant ou arrêter un fixe ne modifie pas les mois passés.
+- **Une seule fois ou régulier** : à la saisie, choisis si une somme revient chaque semaine, chaque mois, tous les 3 mois ou chaque année.
+- **Fixes** : salaire, aides, loyer, forfait, box… notés une fois, comptés automatiquement à partir du mois choisi. Changer un montant à partir d'un mois, arrêter ou reprendre un fixe ne modifie pas les mois passés.
 - **Échéances** : indique le jour de prélèvement pour voir ce qui reste à payer ce mois-ci.
+- **Report du solde** (à activer) : ce qu'il reste à la fin d'un mois s'ajoute au suivant, en positif comme en négatif.
+- **Plusieurs comptes** : courant, livret, espèces, avec des virements qui ne comptent pas comme des dépenses, et une correction à partir du solde réel.
+- **Annuler** une suppression pendant quelques secondes.
 - **Dépenses** ajoutées en deux secondes : suggestions à partir de tes libellés et catégorie devinée automatiquement.
 - **Catégories personnalisées** : crée, renomme, change la couleur ou masque.
 - **Import de relevé bancaire (CSV)** : colonnes détectées, doublons écartés, catégories devinées, annulation possible.
@@ -12,7 +16,8 @@ Petite appli perso pour gérer son argent au quotidien : on note ses dépenses e
 - **Plafonds par catégorie** qui passent en orange puis en rouge.
 - **Objectifs d'épargne** : barre de progression, date cible, et versements déduits du reste à vivre.
 - **Évolution sur 6 mois** de ce qu'il reste en fin de mois.
-- **Recherche** dans les opérations de tous les mois.
+- **Onglet Bilan** : évolution par catégorie sur 6 ou 12 mois, et bilan de l'année.
+- **Recherche et filtres** : par libellé, catégorie, période et montant.
 - **Rappel de sauvegarde** après 30 jours sans export.
 - **Verrouillage par mot de passe** : les données sont chiffrées sur l'appareil.
 - **Synchronisation automatique** entre tes appareils, chiffrée, via un dépôt GitHub privé.
@@ -31,8 +36,20 @@ carnet/
 ├── js/app.js              toute la logique
 ├── manifest.webmanifest   nom, icônes, couleurs (pour l'installation)
 ├── sw.js                  service worker (fonctionnement hors-ligne)
-└── icons/                 icônes de l'appli
+├── fonts/                 polices intégrées (licence libre SIL OFL)
+├── icons/                 icônes de l'appli
+└── tests/                 tests automatiques
 ```
+
+## Vérifier que rien n'est cassé
+
+Avec Node installé, sans rien d'autre à installer :
+
+```bash
+node --test tests/carnet.test.js
+```
+
+À lancer avant chaque mise en ligne. Ces tests couvrent les calculs, la saisie, l'import, la fusion de la synchro et les fichiers piégés, mais pas l'affichage dans un vrai navigateur.
 
 ## Lancer l'appli sur ton PC
 
@@ -105,6 +122,7 @@ Tes appareils s'échangent un fichier chiffré via un dépôt GitHub privé. Ce 
 - **Importer une sauvegarde (remplacer) touche tous tes appareils** : ce qui n'est pas dans le fichier y est aussi supprimé.
 - **Les échanges ont lieu** à l'ouverture, au retour dans l'appli, quelques secondes après une modification, et toutes les 2 minutes quand l'appli est ouverte. Rien ne se passe si elle est fermée ou verrouillée.
 - **L'historique du dépôt** garde les anciennes versions chiffrées.
+- **Changer la phrase de synchro** (*Réglages*) : tes autres appareils devront être reconfigurés. Si l'ancienne a été découverte, repars plutôt d'un nouveau dépôt, car l'historique reste lisible avec elle.
 - **Pour arrêter complètement** : désactive la synchro dans Carnet, supprime le jeton sur GitHub, puis supprime le dépôt.
 
 ## Sécurité
@@ -114,7 +132,7 @@ Tes appareils s'échangent un fichier chiffré via un dépôt GitHub privé. Ce 
 - **Chiffrement** (si tu actives le verrouillage dans *Réglages*) : AES-256-GCM, clé dérivée du mot de passe avec PBKDF2-SHA256 (600 000 itérations). Ni le mot de passe ni la clé ne sont enregistrés.
 - **Verrouillage automatique** après 5 minutes sans activité, ou 1 minute après avoir quitté l'appli. Les données sont alors retirées de la page.
 - **Politique CSP stricte** : aucun script en ligne, aucune ressource externe. La seule connexion autorisée est l'API GitHub, utilisée uniquement si tu actives la synchro.
-- **Aucun tiers** : pas de pisteur, pas de police Google, pas de serveur à nous. Sans synchro, rien ne quitte l'appareil.
+- **Aucun tiers** : pas de pisteur, polices intégrées à l'appli, pas de serveur à nous. Sans synchro, rien ne quitte l'appareil.
 - **Synchro chiffrée de bout en bout** : GitHub ne reçoit qu'un fichier illisible, avec une clé dérivée de ta phrase de synchro. Le jeton est conservé uniquement dans la partie chiffrée de l'appareil, et jamais dans les exports. Carnet refuse un dépôt public et n'écrase jamais un fichier distant qu'il ne sait pas déchiffrer.
 - **Fichiers et stockage considérés comme non fiables** : tout est validé au chargement. Un fichier piégé ne peut ni injecter de code ni bloquer l'appli.
 - **Relevés bancaires** traités comme des données non fiables : ils restent dans ton navigateur et rien n'est envoyé.
@@ -139,10 +157,10 @@ Aucune appli ne peut promettre zéro faille, et voici les limites de celle-ci :
 
 ## Publier une nouvelle version
 
-Après une modification, augmente le numéro dans `sw.js` (`carnet-v4` → `carnet-v5`), puis commit et push. Le téléphone récupère la nouvelle version à la prochaine ouverture.
+Après une modification, augmente le numéro dans `sw.js` (`carnet-v5` → `carnet-v6`), puis commit et push. Le téléphone récupère la nouvelle version à la prochaine ouverture.
 
 ## Idées pour la suite
 
 À demander à l'assistant d'Antigravity, par exemple :
 
-- « Permets de reprendre un fixe arrêté. »
+- « Ajoute des budgets par semaine. »

@@ -62,12 +62,37 @@ const parseAmt=s=>{
 };
 const sum=a=>a.reduce((s,x)=>s+(+x.amount||0),0);
 const norm=s=>String(s).normalize("NFD").replace(/\p{M}/gu,"").toLowerCase();
-const blankProfile=()=>({recurring:[],budgets:{},goals:[],cats:{},deleted:{}});
+const blankProfile=()=>({recurring:[],budgets:{},goals:[],cats:{},deleted:{},accounts:[]});
 // Montant d'un fixe pour un mois donné : les anciens montants restent dans hist.
 const amountAt=(r,ym)=>{const h=r.hist&&r.hist.find(x=>ym<=x.until);return h?h.amount:r.amount;};
 const monthsBetween=(a,b)=>(+b.slice(0,4)-+a.slice(0,4))*12+(+b.slice(5)-+a.slice(5));
+// Nombre de fois qu'un jour de la semaine tombe dans un mois, éventuellement jusqu'à un jour donné.
+function countWeekday(ym,wd,upto){
+  const dim=daysIn(ym), last=upto?Math.min(upto,dim):dim;let n=0;
+  for(let d=1;d<=last;d++)if(new Date(+ym.slice(0,4),+ym.slice(5)-1,d).getDay()===wd)n++;
+  return n;
+}
+// Nombre de passages d'un fixe dans un mois, selon sa fréquence.
+function occurrences(r,ym){
+  const f=r.freq||"month";
+  if(f==="month"||!r.since)return 1;
+  const d=monthsBetween(r.since,ym);if(d<0)return 0;
+  if(f==="quarter")return d%3===0?1:0;
+  if(f==="year")return d%12===0?1:0;
+  if(f==="week")return countWeekday(ym,typeof r.wd==="number"?r.wd:1);
+  return 1;
+}
+// Historique d'un fixe quand son montant change à partir du mois "from" : les mois d'avant gardent leur montant.
+function histForChange(prev,from){
+  const u=addMonth(from,-1), keep=(prev.hist||[]).filter(h=>h.until<u);
+  if(!prev.since||u>=prev.since)keep.push({until:u,amount:amountAt(prev,u)});
+  return keep.length?keep:undefined;
+}
+const MAIN="main", MAX_ACCOUNTS=20;
+const WEEKDAYS=["dimanche","lundi","mardi","mercredi","jeudi","vendredi","samedi"];
 
-const S={tx:[],profile:blankProfile(),month:thisYm(),tab:"mois",filter:"all",query:"",ready:false,backupHidden:false,catsOpen:false,undo:null,sync:null};
+const S={tx:[],profile:blankProfile(),month:thisYm(),tab:"mois",filter:"all",query:"",ready:false,backupHidden:false,catsOpen:false,undo:null,sync:null,
+  opsF:{cat:"",period:"month",min:"",max:""},opsFOpen:false,statCat:"",statRange:6,year:+thisYm().slice(0,4)};
 
 /* ---------- validation des données ---------- */
 // Tout ce qui vient d'un fichier ou du stockage est considéré comme non fiable :
@@ -80,6 +105,7 @@ const validDate=v=>{
 const validYm=v=>typeof v==="string"&&/^\d{4}-(0[1-9]|1[0-2])$/.test(v);
 const validStamp=v=>typeof v==="number"&&isFinite(v)&&v>0;
 const cleanAmt=v=>typeof v==="number"&&isFinite(v)&&v>0&&v<=MAX_AMOUNT?round2(v):null;
+const cleanSigned=v=>typeof v==="number"&&isFinite(v)&&Math.abs(v)<=MAX_AMOUNT?round2(v):0;
 const cleanLabel=v=>typeof v==="string"?v.replace(/[\u0000-\u001f\u007f‪-‮⁦-⁩]/g,"").trim().slice(0,60):"";
 function cleanCats(src){
   const out={};if(!src||typeof src!=="object")return out;
@@ -117,11 +143,31 @@ function cleanData(d){
     return g;
   });
   const goalIds=new Set(goals.map(g=>g.id));
+  const accounts=list(Array.isArray(p.accounts)?p.accounts.slice(0,MAX_ACCOUNTS):[],o=>{
+    if(!o||typeof o!=="object")return null;
+    const name=cleanLabel(o.name).slice(0,30);
+    if(!name||!validYm(o.from))return null;
+    const a={id:id(o.id),name,budget:o.budget!==false,opening:cleanSigned(o.opening),from:o.from};
+    if(a.id===MAIN)a.budget=true;
+    if(validStamp(o.upd))a.upd=o.upd;
+    return a;
+  });
+  const acctIds=new Set([MAIN].concat(accounts.map(a=>a.id)));
+  const keepAcc=(r,v)=>{if(typeof v==="string"&&v!==MAIN&&acctIds.has(v))r.acc=v;};
   const tx=list(src.tx,o=>{
     if(!o||!validDate(o.date))return null;
+    const ts=typeof o.ts==="number"&&isFinite(o.ts)?o.ts:0;
+    if(o.type==="tr"){
+      const amount=cleanAmt(o.amount);
+      if(amount===null||!acctIds.has(o.from)||!acctIds.has(o.to)||o.from===o.to)return null;
+      const v={id:id(o.id),type:"tr",cat:"autre",amount,label:cleanLabel(o.label),from:o.from,to:o.to,date:o.date,ts};
+      if(validStamp(o.upd))v.upd=o.upd;
+      return v;
+    }
     const r=base(o);if(!r)return null;
-    r.date=o.date;r.ts=typeof o.ts==="number"&&isFinite(o.ts)?o.ts:0;
+    r.date=o.date;r.ts=ts;
     if(goalIds.has(o.goal))r.goal=o.goal;
+    keepAcc(r,o.acc);
     return r;
   });
   const recurring=list(p.recurring,o=>{
@@ -129,6 +175,11 @@ function cleanData(d){
     if(validYm(o.since))r.since=o.since;
     if(validYm(o.until))r.until=o.until;
     if(Number.isInteger(o.day)&&o.day>=1&&o.day<=31)r.day=o.day;
+    keepAcc(r,o.acc);
+    if(r.since&&["week","quarter","year"].includes(o.freq)){
+      r.freq=o.freq;
+      if(o.freq==="week")r.wd=Number.isInteger(o.wd)&&o.wd>=0&&o.wd<=6?o.wd:1;
+    }
     if(Array.isArray(o.hist)){
       const h=o.hist.slice(0,240).filter(x=>x&&validYm(x.until)&&cleanAmt(x.amount)!==null).map(x=>({until:x.until,amount:cleanAmt(x.amount)})).sort((a,b)=>a.until.localeCompare(b.until));
       if(h.length)r.hist=h;
@@ -143,7 +194,9 @@ function cleanData(d){
   if(p.deleted&&typeof p.deleted==="object")Object.keys(p.deleted).slice(0,MAX_ITEMS).forEach(k=>{
     if(k!=="__proto__"&&/^[\w-]{1,64}$/.test(k)&&validStamp(p.deleted[k]))deleted[k]=p.deleted[k];
   });
-  const profile={recurring,budgets,goals,cats,deleted};
+  const profile={recurring,budgets,goals,cats,deleted,accounts};
+  if(p.carry&&typeof p.carry==="object"&&validYm(p.carry.from))profile.carry={on:p.carry.on===true,from:p.carry.from};
+  if(validStamp(p.carryUpd))profile.carryUpd=p.carryUpd;
   if(validDate(p.lastBackup))profile.lastBackup=p.lastBackup;
   if(validStamp(p.budgetsUpd))profile.budgetsUpd=p.budgetsUpd;
   if(validStamp(p.catsUpd))profile.catsUpd=p.catsUpd;
@@ -245,8 +298,9 @@ function csvCell(v){
 }
 function exportCsv(){
   if(!clearWarning())return;
+  const am=acctMap();
   const rows=S.tx.slice().sort((a,b)=>a.date.localeCompare(b.date)||(a.ts-b.ts)).map(t=>
-    [t.date,t.type==="in"?"Rentrée":"Dépense",cat(t.cat).n,t.label].map(csvCell).join(";")+";"+t.amount.toFixed(2).replace(".",","));
+    (t.type==="tr"?[t.date,"Virement",acctName(am,t.from)+" vers "+acctName(am,t.to),t.label]:[t.date,t.type==="in"?"Rentrée":"Dépense",cat(t.cat).n,t.label]).map(csvCell).join(";")+";"+t.amount.toFixed(2).replace(".",","));
   download("carnet-operations-"+todayStr()+".csv","text/csv;charset=utf-8","﻿Date;Type;Catégorie;Libellé;Montant\r\n"+rows.join("\r\n")+"\r\n");
   toast("Fichier CSV téléchargé");
 }
@@ -344,15 +398,26 @@ function csvDetect(rows){
 }
 const txKey=(date,type,amount,label)=>date+"|"+type+"|"+amount.toFixed(2)+"|"+norm(label);
 function csvAnalyse(){
-  const c=SH.csv, m=c.map, skipFix=$("#csvSkipFix").checked, res={add:[],bad:0,dup:0,fixed:[]};
-  const exist=new Map();S.tx.forEach(t=>{const k=txKey(t.date,t.type,t.amount,t.label);exist.set(k,(exist.get(k)||0)+1);});
+  return csvCompare(SH.csv,$("#csvSkipFix").checked,$("#csvSkipNear").checked);
+}
+// Trie les lignes d'un relevé : à importer, déjà présentes, proches d'une saisie à la main, fixes, illisibles.
+function csvCompare(c,skipFix,skipNear){
+  const m=c.map, res={add:[],bad:0,dup:0,fixed:[],near:[]};
+  const exist=new Map(), nearAt=new Map(), nk=(d,ty,a)=>d+"|"+ty+"|"+a.toFixed(2);
+  S.tx.forEach(t=>{
+    const k=txKey(t.date,t.type,t.amount,t.label), n=nk(t.date,t.type,t.amount);
+    exist.set(k,(exist.get(k)||0)+1);nearAt.set(n,(nearAt.get(n)||0)+1);
+  });
   const fixAt={}, fixes=ym=>{
     if(!fixAt[ym]){
-      const f=new Map();activeFixes(ym).forEach(r=>{const k=r.type+"|"+r.amount.toFixed(2);f.set(k,(f.get(k)||0)+1);});
+      const f=new Map();
+      activeFixes(ym).forEach(r=>{const k=r.type+"|"+r.unit.toFixed(2);f.set(k,(f.get(k)||0)+r.n);});
       fixAt[ym]=f;
     }
     return fixAt[ym];
   };
+  // 1er passage : les doublons exacts, pour qu'ils n'occupent pas la place d'une saisie à la main.
+  const rest=[];
   c.rows.forEach(r=>{
     const date=bankDate(r[m.date]);
     let a=null;
@@ -362,12 +427,16 @@ function csvAnalyse(){
       if(d)a=-Math.abs(d);else if(cr)a=Math.abs(cr);
     }
     if(!date||!a){res.bad++;return;}
-    const type=a<0?"out":"in", amount=Math.abs(a), label=cleanLabel(r[m.label]), k=txKey(date,type,amount,label);
-    if(exist.get(k)>0){exist.set(k,exist.get(k)-1);res.dup++;return;}
-    // Un fixe ne passe qu'une fois par mois : une seule ligne ignorée par fixe.
-    const f=fixes(date.slice(0,7)), fk=type+"|"+amount.toFixed(2);
-    if(skipFix&&f.get(fk)>0){f.set(fk,f.get(fk)-1);res.fixed.push(label||"Sans libellé");return;}
-    res.add.push({date,type,amount,label});
+    const type=a<0?"out":"in", amount=Math.abs(a), label=cleanLabel(r[m.label]), k=txKey(date,type,amount,label), n=nk(date,type,amount);
+    if(exist.get(k)>0){exist.set(k,exist.get(k)-1);nearAt.set(n,nearAt.get(n)-1);res.dup++;return;}
+    rest.push({date,type,amount,label,n});
+  });
+  // 2e passage : une ligne ne peut correspondre qu'à une seule saisie, et un fixe ne passe qu'autant de fois que prévu.
+  rest.forEach(x=>{
+    if(skipNear&&nearAt.get(x.n)>0){nearAt.set(x.n,nearAt.get(x.n)-1);res.near.push(x.label||"Sans libellé");return;}
+    const f=fixes(x.date.slice(0,7)), fk=x.type+"|"+x.amount.toFixed(2);
+    if(skipFix&&f.get(fk)>0){f.set(fk,f.get(fk)-1);res.fixed.push(x.label||"Sans libellé");return;}
+    res.add.push({date:x.date,type:x.type,amount:x.amount,label:x.label});
   });
   return res;
 }
@@ -375,8 +444,8 @@ function csvRefresh(){
   const r=csvAnalyse(), parts=[];
   if(r.dup)parts.push(r.dup+" déjà présente"+(r.dup>1?"s":""));
   if(r.bad)parts.push(r.bad+" illisible"+(r.bad>1?"s":""));
-  const nf=r.fixed.length, ignored=nf?" Ignorée"+(nf>1?"s":"")+" car au montant d'un fixe : "+r.fixed.slice(0,5).join(", ")+(nf>5?" et "+(nf-5)+" autre"+(nf>6?"s":""):"")+".":"";
-  $("#csvSummary").textContent=r.add.length+" opération"+(r.add.length>1?"s":"")+" à importer"+(parts.length?" · "+parts.join(" · "):"")+"."+ignored;
+  const listed=(l,why)=>{const n=l.length;return n?" Ignorée"+(n>1?"s":"")+" car "+why+" : "+l.slice(0,5).join(", ")+(n>5?" et "+(n-5)+" autre"+(n>6?"s":""):"")+".":"";};
+  $("#csvSummary").textContent=r.add.length+" opération"+(r.add.length>1?"s":"")+" à importer"+(parts.length?" · "+parts.join(" · "):"")+"."+listed(r.near,"déjà notée à la main")+listed(r.fixed,"au montant d'un fixe");
   $("#csvPreview").innerHTML=r.add.length?r.add.slice(0,5).map(x=>'<div class="line"><span class="w num">'+esc(x.date.slice(8)+"/"+x.date.slice(5,7))+'</span><span class="l">'+esc(x.label||"Sans libellé")+'</span><b class="num">'+(x.type==="in"?"+":"−")+esc(fmt(x.amount))+'</b></div>').join(""):'<div class="empty">Aucune opération à importer avec ces réglages.</div>';
   const ok=$("#shOk");ok.disabled=!r.add.length;ok.textContent=r.add.length?"Importer "+r.add.length+" opération"+(r.add.length>1?"s":""):"Rien à importer";
 }
@@ -391,7 +460,12 @@ function csvCommit(){
   if(!r.add.length)return;
   if(S.tx.length+r.add.length>MAX_ITEMS){showErr("Ton carnet deviendrait trop gros avec ce fichier.");return;}
   const stats=labelStats(), t0=Date.now();
-  const list=r.add.map((x,i)=>({id:uid(),type:x.type,cat:guessCat(x.label,x.type,stats)||(x.type==="in"?"extra":"autre"),amount:x.amount,label:x.label,date:x.date,ts:t0+i}));
+  const acc=$("#csvAcc").value;
+  const list=r.add.map((x,i)=>{
+    const t={id:uid(),type:x.type,cat:guessCat(x.label,x.type,stats)||(x.type==="in"?"extra":"autre"),amount:x.amount,label:x.label,date:x.date,ts:t0+i};
+    if(acc&&acc!==MAIN)t.acc=acc;
+    return t;
+  });
   const prev=S.tx;
   S.tx=S.tx.concat(list);
   saveLocal().then(ok=>{
@@ -431,7 +505,7 @@ function cleanSync(o){
 }
 const validRepo=v=>typeof v==="string"&&/^[\w-][\w.-]{0,99}\/[\w-][\w.-]{0,99}$/.test(v);
 const validToken=v=>typeof v==="string"&&/^[A-Za-z0-9_]{20,255}$/.test(v);
-const normRepo=v=>String(v).trim().replace(/^https?:\/\/github\.com\//i,"").replace(/\.git$/i,"").replace(/\/+$/,"");
+const normRepo=v=>String(v).trim().replace(/^https?:\/\/github\.com\//i,"").replace(/\/+$/,"").replace(/\.git$/i,"");
 async function gh(cfg,path,opt,accept){
   try{
     return await fetch(SYNC_API+"/repos/"+cfg.repo+path,Object.assign({cache:"no-store",credentials:"omit",redirect:"error",
@@ -480,11 +554,11 @@ async function deriveRaw(pw,salt,iter){
 const rawKey=raw=>crypto.subtle.importKey("raw",raw,{name:"AES-GCM"},false,["encrypt","decrypt"]);
 async function syncKey(){if(!SY.key)SY.key=await rawKey(fromB64(S.sync.key));return SY.key;}
 const itemJson=o=>{const c=Object.assign({},o);delete c.upd;return JSON.stringify(c);};
-const syncLists=()=>[S.tx,S.profile.recurring||[],S.profile.goals||[]];
+const syncLists=()=>[S.tx,S.profile.recurring||[],S.profile.goals||[],S.profile.accounts||[]];
 function syncSnapshot(){
   const items=new Map();
   syncLists().forEach(l=>l.forEach(o=>items.set(o.id,{j:itemJson(o),upd:o.upd})));
-  SY.base={items,budgets:JSON.stringify(S.profile.budgets||{}),cats:JSON.stringify(S.profile.cats||{})};
+  SY.base={items,budgets:JSON.stringify(S.profile.budgets||{}),cats:JSON.stringify(S.profile.cats||{}),carry:JSON.stringify(S.profile.carry||null)};
 }
 // Compare à la dernière photo : ce qui a changé reçoit une date, ce qui a disparu est noté comme supprimé.
 function syncStamp(){
@@ -505,6 +579,8 @@ function syncStamp(){
   const bj=JSON.stringify(S.profile.budgets||{}), cj=JSON.stringify(S.profile.cats||{});
   if(bj!==b.budgets){b.budgets=bj;S.profile.budgetsUpd=t;changed=true;}
   if(cj!==b.cats){b.cats=cj;S.profile.catsUpd=t;changed=true;}
+  const rj=JSON.stringify(S.profile.carry||null);
+  if(rj!==b.carry){b.carry=rj;S.profile.carryUpd=t;changed=true;}
   if(changed){S.sync.dirty=true;SY.edits++;}
 }
 function syncMerge(a,b){
@@ -517,19 +593,20 @@ function syncMerge(a,b){
     return Array.from(m.values()).filter(x=>!(hasOwn(del,x.id)&&del[x.id]>=(x.upd||0)));
   };
   const pa=a.profile, pb=b.profile, bFirst=(pb.budgetsUpd||0)>(pa.budgetsUpd||0), cFirst=(pb.catsUpd||0)>(pa.catsUpd||0);
-  const profile={recurring:items(pa.recurring,pb.recurring),goals:items(pa.goals,pb.goals),
+  const profile={recurring:items(pa.recurring,pb.recurring),goals:items(pa.goals,pb.goals),accounts:items(pa.accounts||[],pb.accounts||[]),
     budgets:bFirst?pb.budgets:pa.budgets,cats:cFirst?pb.cats:pa.cats,deleted:del};
-  const bu=Math.max(pa.budgetsUpd||0,pb.budgetsUpd||0), cu=Math.max(pa.catsUpd||0,pb.catsUpd||0);
-  if(bu)profile.budgetsUpd=bu;if(cu)profile.catsUpd=cu;
+  const bu=Math.max(pa.budgetsUpd||0,pb.budgetsUpd||0), cu=Math.max(pa.catsUpd||0,pb.catsUpd||0), ru=Math.max(pa.carryUpd||0,pb.carryUpd||0);
+  if(bu)profile.budgetsUpd=bu;if(cu)profile.catsUpd=cu;if(ru)profile.carryUpd=ru;
+  const carry=(pb.carryUpd||0)>(pa.carryUpd||0)?pb.carry:pa.carry;if(carry)profile.carry=carry;
   const lb=[pa.lastBackup,pb.lastBackup].filter(Boolean).sort().pop();if(lb)profile.lastBackup=lb;
   return {tx:items(a.tx,b.tx),profile};
 }
 // Forme comparable d'un état, quel que soit l'ordre des éléments.
 function syncCanon(st){
   const c=cleanData(st), byId=(x,y)=>x.id<y.id?-1:1, sorted=o=>Object.keys(o).sort().map(k=>[k,o[k]]);
-  c.tx.sort(byId);c.profile.recurring.sort(byId);c.profile.goals.sort(byId);
+  c.tx.sort(byId);c.profile.recurring.sort(byId);c.profile.goals.sort(byId);c.profile.accounts.sort(byId);
   const p=c.profile;
-  return JSON.stringify([c.tx,p.recurring,p.goals,sorted(p.budgets),sorted(p.cats),sorted(p.deleted),p.lastBackup||"",p.budgetsUpd||0,p.catsUpd||0]);
+  return JSON.stringify([c.tx,p.recurring,p.goals,p.accounts,sorted(p.budgets),sorted(p.cats),sorted(p.deleted),p.lastBackup||"",p.budgetsUpd||0,p.catsUpd||0,p.carry||null,p.carryUpd||0]);
 }
 function syncState(msg,err){
   SY.msg=msg;SY.err=!!err;
@@ -541,8 +618,8 @@ function syncStateText(){
   return at?"À jour. Dernier échange : "+new Date(at).toLocaleString("fr-FR",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})+".":"En attente du premier échange.";
 }
 function syncRefreshView(){
-  const box=$("#opsList");
-  if(box&&document.activeElement===$("#opsSearch")){box.innerHTML=opsBody();applyStyles(box);}
+  const box=$("#opsList"), a=document.activeElement;
+  if(box&&a&&a.matches&&a.matches("#opsSearch,#opsCat,#opsPeriod,#opsMin,#opsMax")){box.innerHTML=opsBody();applyStyles(box);}
   else render();
 }
 function syncSoon(){clearTimeout(SY.timer);SY.timer=setTimeout(syncRun,SYNC_DEBOUNCE);}
@@ -589,6 +666,30 @@ async function syncRun(){
   }
 }
 function syncStart(){if(S.sync){syncSnapshot();syncRun();}}
+async function submitPhrase(){
+  const btn=$("#shOk");if(btn.disabled)return;
+  const cur=$("#phCur").value, neo=$("#phNew").value, cfg=S.sync, label=btn.textContent;
+  if(!cfg){closeSheet();return;}
+  if(neo.length<SYNC_MIN_PW){showErr("Il faut au moins "+SYNC_MIN_PW+" caractères.");return;}
+  if(neo!==$("#phNew2").value){showErr("Les deux phrases ne sont pas identiques.");return;}
+  $("#shErr").hidden=true;setBusy(btn,true);
+  try{
+    const old=await deriveRaw(cur,fromB64(cfg.salt),cfg.iter);
+    if(toB64(old)!==cfg.key){showErr("La phrase actuelle est incorrecte.");return;}
+    // On récupère d'abord les derniers changements, pour ne rien perdre en réécrivant le fichier.
+    while(SY.running)await new Promise(r=>setTimeout(r,100));
+    cfg.dirty=true;await syncRun();
+    if(S.sync!==cfg)return;
+    if(SY.err||cfg.dirty){showErr(SY.msg||"La synchro n'a pas abouti. Réessaie quand tu as du réseau.");return;}
+    const salt=randomBytes(16), raw=await deriveRaw(neo,salt,KDF_ITER), key=await rawKey(raw);
+    const box=await seal(JSON.stringify({tx:S.tx,profile:S.profile}),key,salt,KDF_ITER);
+    const sha=await ghPut(cfg,box,cfg.sha);
+    if(!sha){showErr("Un autre appareil vient d'écrire. Réessaie dans un instant.");return;}
+    cfg.key=toB64(raw);cfg.salt=toB64(salt);cfg.iter=KDF_ITER;cfg.sha=sha;cfg.at=Date.now();SY.key=key;
+    await saveLocal();closeSheet();render();toast("Phrase de synchro changée. Reconfigure tes autres appareils.");
+  }catch(e){showErr(syncMessage(e));}
+  finally{setBusy(btn,false,label);}
+}
 async function submitSync(){
   const btn=$("#shOk"), tokenOnly=SH.action==="token";
   if(btn.disabled)return;
@@ -634,7 +735,7 @@ function lockNow(){
   closeSheet();
   SEC.key=null;SEC.salt=null;SEC.locked=true;
   syncReset();
-  S.tx=[];S.profile=blankProfile();S.query="";S.undo=null;S.sync=null;refreshCats();
+  S.tx=[];S.profile=blankProfile();S.query="";S.undo=null;S.sync=null;UNDO=null;refreshCats();
   $("#view").textContent="";$("#toast").hidden=true;
   ["#app","#nav","#fab"].forEach(s=>{$(s).hidden=true;});
   resetLockForm();$("#lock").hidden=false;
@@ -699,22 +800,89 @@ window.addEventListener("storage",async e=>{
 });
 
 /* ---------- maths ---------- */
-// Les fixes qui comptent pour ce mois-là, avec le montant de l'époque.
+// Les fixes qui comptent pour ce mois-là, avec le montant de l'époque et leur fréquence.
 function activeFixes(ym){
-  return (S.profile.recurring||[]).filter(r=>(!r.since||r.since<=ym)&&(!r.until||ym<=r.until)).map(r=>Object.assign({},r,{amount:amountAt(r,ym)}));
+  const out=[];
+  (S.profile.recurring||[]).forEach(r=>{
+    if((r.since&&r.since>ym)||(r.until&&ym>r.until))return;
+    const n=occurrences(r,ym);if(!n)return;
+    const unit=amountAt(r,ym);
+    out.push(Object.assign({},r,{amount:round2(unit*n),unit,n}));
+  });
+  return out;
+}
+// Le compte courant existe toujours, même si tu ne l'as jamais configuré.
+function accounts(){
+  const l=S.profile.accounts||[], main=l.find(a=>a.id===MAIN)||{id:MAIN,name:"Compte courant",budget:true,opening:0,from:thisYm()};
+  return [main].concat(l.filter(a=>a.id!==MAIN));
+}
+function acctMap(){const m=new Map();accounts().forEach(a=>m.set(a.id,a));return m;}
+const acctName=(am,id)=>{const a=am.get(id);return a?a.name:"Compte supprimé";};
+const inBudget=(am,id)=>{const a=am.get(id||MAIN);return !a||a.budget!==false;};
+// Les totaux d'un mois, sans report. Seuls les comptes « dans le budget » comptent pour le reste à vivre.
+function monthCore(ym,txs,am){
+  const btx=txs.filter(t=>t.type!=="tr"&&inBudget(am,t.acc));
+  const rec=activeFixes(ym).filter(r=>inBudget(am,r.acc));
+  const inTx=sum(btx.filter(t=>t.type==="in")), outTx=sum(btx.filter(t=>t.type==="out"));
+  const inFix=sum(rec.filter(r=>r.type==="in")), outFix=sum(rec.filter(r=>r.type==="out"));
+  // Un virement entre deux comptes du budget ne change rien. Vers un livret hors budget, il baisse le reste à vivre.
+  let tr=0;
+  txs.forEach(t=>{
+    if(t.type!=="tr")return;
+    const f=inBudget(am,t.from), d=inBudget(am,t.to);
+    if(f&&!d)tr-=t.amount;else if(!f&&d)tr+=t.amount;
+  });
+  const income=inTx+inFix, free=income-outFix;
+  return {btx,rec,inTx,outTx,inFix,outFix,income,free,tr,net:free-outTx+tr};
+}
+function txByMonth(){const m=new Map();S.tx.forEach(t=>{const k=t.date.slice(0,7);if(!m.has(k))m.set(k,[]);m.get(k).push(t);});return m;}
+// Ce que les mois précédents laissent à ce mois-ci, si le report est activé.
+function carryIn(ym,am,by){
+  const cfg=S.profile.carry;
+  if(!cfg||!cfg.on||ym<cfg.from)return 0;
+  let tot=0;
+  accounts().forEach(a=>{if(a.budget!==false&&a.from<=ym)tot+=a.opening;});
+  for(let m=cfg.from;m<ym;m=addMonth(m,1))tot+=monthCore(m,by.get(m)||[],am).net;
+  return round2(tot);
 }
 function compute(ym){
-  const txs=S.tx.filter(t=>t.date&&t.date.slice(0,7)===ym);
-  const rec=activeFixes(ym);
-  const inTx=sum(txs.filter(t=>t.type==="in")), outTx=sum(txs.filter(t=>t.type==="out"));
-  const inFix=sum(rec.filter(r=>r.type==="in")), outFix=sum(rec.filter(r=>r.type==="out"));
-  const income=inTx+inFix, free=income-outFix, reste=free-outTx;
-  const byCat={};txs.filter(t=>t.type==="out").forEach(t=>{byCat[t.cat]=(byCat[t.cat]||0)+(+t.amount||0);});
+  const am=acctMap(), by=txByMonth(), txs=by.get(ym)||[], core=monthCore(ym,txs,am), carry=carryIn(ym,am,by);
+  const {btx,rec,inTx,outTx,inFix,outFix,income,free,tr,net}=core;
+  const reste=round2(net+carry);
+  const byCat={};btx.filter(t=>t.type==="out").forEach(t=>{byCat[t.cat]=(byCat[t.cat]||0)+(+t.amount||0);});
   const cur=ym===thisYm(), past=ym<thisYm(), dim=daysIn(ym);
   const day=now().getDate();
   const daysLeft=cur?dim-day+1:past?0:dim;
   const elapsed=cur?day/dim:past?1:0;
-  return {txs,rec,inTx,outTx,inFix,outFix,income,free,reste,byCat,cur,past,dim,day,daysLeft,elapsed};
+  return {txs,rec,inTx,outTx,inFix,outFix,income,free,tr,net,carry,reste,byCat,cur,past,dim,day,daysLeft,elapsed};
+}
+// Part d'un fixe déjà passée à une date donnée, pour calculer un solde de compte.
+function fixPaid(r,ym,cur,todayDay){
+  const n=occurrences(r,ym);if(!n)return 0;
+  const unit=amountAt(r,ym);
+  if(ym<cur)return unit*n;
+  if(r.freq==="week")return unit*countWeekday(ym,typeof r.wd==="number"?r.wd:1,todayDay);
+  if(r.day&&Math.min(r.day,daysIn(ym))>todayDay)return 0;
+  return unit*n;
+}
+// Solde d'un compte aujourd'hui : ce qu'il y avait au départ, plus tout ce qui est passé depuis.
+function acctBalance(a){
+  const today=todayStr(), cur=today.slice(0,7), todayDay=+today.slice(8), start=a.from+"-01";
+  let b=a.opening;
+  S.tx.forEach(t=>{
+    if(t.date<start||t.date>today)return;
+    if(t.type==="tr"){if(t.from===a.id)b-=t.amount;if(t.to===a.id)b+=t.amount;}
+    else if((t.acc||MAIN)===a.id)b+=t.type==="in"?t.amount:-t.amount;
+  });
+  (S.profile.recurring||[]).forEach(r=>{
+    if((r.acc||MAIN)!==a.id)return;
+    let m=r.since&&r.since>a.from?r.since:a.from;
+    for(;m<=cur&&(!r.until||m<=r.until);m=addMonth(m,1)){
+      const p=fixPaid(r,m,cur,todayDay);
+      b+=r.type==="in"?p:-p;
+    }
+  });
+  return round2(b);
 }
 function pace(c){
   if(c.income<=0&&c.outFix<=0&&c.outTx<=0) return null;
@@ -748,6 +916,12 @@ function dayLabel(d){
   return new Date(+d.slice(0,4),+d.slice(5,7)-1,+d.slice(8,10)).toLocaleDateString("fr-FR",o);
 }
 function opRow(t){
+  if(t.type==="tr"){
+    const am=acctMap();
+    return '<button class="op" data-edit="'+esc(t.id)+'"><span class="ic" data-bg="var(--muted)">↔</span>'+
+      '<span class="t"><b>'+esc(t.label||"Virement")+'</b><span>'+esc(acctName(am,t.from)+" → "+acctName(am,t.to))+'</span></span>'+
+      '<span class="m num">'+esc(fmt(+t.amount))+'</span></button>';
+  }
   const k=cat(t.cat); const ini=k.n.charAt(0);
   return '<button class="op" data-edit="'+esc(t.id)+'"><span class="ic" data-bg="'+k.c+'">'+esc(ini)+'</span>'+
     '<span class="t"><b>'+esc(t.label||k.n)+(t.example?'<span class="tag">exemple</span>':'')+'</b><span>'+esc(k.n)+'</span></span>'+
@@ -771,16 +945,32 @@ function backupBanner(){
 }
 function viewUpcoming(c){
   if(!c.cur)return "";
-  const dated=c.rec.filter(r=>r.day);
+  const dated=c.rec.filter(r=>r.day||r.freq==="week");
   if(!dated.length)return "";
-  const due=r=>Math.min(r.day,c.dim);
-  const next=dated.filter(r=>due(r)>=c.day).sort((a,b)=>due(a)-due(b));
+  const next=[];
+  dated.forEach(r=>{
+    if(r.freq==="week"){
+      const done=countWeekday(S.month,r.wd,c.day-1), left=r.n-done;
+      if(left>0)next.push({d:c.day,when:left+" × "+WEEKDAYS[r.wd],label:r.label||cat(r.cat).n,type:r.type,amount:round2(r.unit*left)});
+      return;
+    }
+    const d=Math.min(r.day,c.dim);
+    if(d>=c.day)next.push({d,when:d===c.day?"aujourd'hui":"le "+d,label:r.label||cat(r.cat).n,type:r.type,amount:r.amount});
+  });
+  next.sort((a,b)=>a.d-b.d);
   const left=sum(next.filter(r=>r.type==="out"));
   const hint=!next.length?"Tous tes fixes datés sont passés ce mois-ci.":left>0?fmt(left)+" de fixes restent à payer. Ils sont déjà déduits de ton reste à vivre.":"Aucun prélèvement à venir, seulement des rentrées.";
-  return '<section class="card"><h2>À venir ce mois-ci</h2><p class="hint pull">'+esc(hint)+'</p>'+(next.length?'<div class="lines">'+next.map(r=>{
-    const d=due(r);
-    return '<div class="line"><span class="w num">'+(d===c.day?"aujourd'hui":"le "+d)+'</span><span class="l">'+esc(r.label||cat(r.cat).n)+'</span><b class="num">'+(r.type==="in"?"+":"−")+esc(fmt(r.amount))+'</b></div>';
-  }).join("")+'</div>':'')+'</section>';
+  return '<section class="card"><h2>À venir ce mois-ci</h2><p class="hint pull">'+esc(hint)+'</p>'+(next.length?'<div class="lines">'+next.map(x=>
+    '<div class="line"><span class="w num">'+esc(x.when)+'</span><span class="l">'+esc(x.label)+'</span><b class="num">'+(x.type==="in"?"+":"−")+esc(fmt(x.amount))+'</b></div>'
+  ).join("")+'</div>':'')+'</section>';
+}
+function viewAccounts(){
+  const l=accounts();
+  if(l.length<2)return "";
+  const rows=l.map(a=>({a,b:acctBalance(a)}));
+  return '<section class="card"><h2>Mes comptes</h2><div class="lines">'+rows.map(x=>
+    '<div class="line month-line"><span class="l">'+esc(x.a.name)+'</span><b class="num">'+esc(fmt(x.b))+'</b></div>').join("")+
+    '</div><div class="acct-total"><span>Total</span><span class="num">'+esc(fmt(round2(rows.reduce((s,x)=>s+x.b,0))))+'</span></div></section>';
 }
 function viewCompare(c){
   if(!c.cur&&!c.past)return "";
@@ -806,7 +996,8 @@ function goalHint(g,total){
   return base+", soit "+fmt(Math.ceil(left/n*100)/100)+" par mois jusqu'à "+monthLabel(g.date)+".";
 }
 function viewTrend(){
-  const data=[];for(let i=5;i>=0;i--){const ym=addMonth(S.month,-i),c=compute(ym);data.push({ym,has:c.txs.length>0||c.rec.length>0,v:c.reste});}
+  const am=acctMap(), by=txByMonth();
+  const data=[];for(let i=5;i>=0;i--){const ym=addMonth(S.month,-i),t=by.get(ym)||[],c=monthCore(ym,t,am);data.push({ym,has:t.length>0||c.rec.length>0,v:c.net});}
   const real=data.filter(x=>x.has);
   if(real.length<2)return "";
   const up=Math.max(0,...real.map(x=>x.v)), down=Math.max(0,...real.map(x=>-x.v)), tot=up+down||1;
@@ -833,6 +1024,7 @@ function viewMois(){
   else{lbl="Prévu pour "+monthName(S.month);sub="Avec tes rentrées et charges fixes actuelles";}
   let h=(S.sync&&SY.err?'<div class="banner"><span>Synchro en panne : '+esc(SY.msg)+'</span><button class="link" data-goto="reglages">Voir</button></div>':'')+backupBanner()+exampleBanner();
   h+='<section class="cover" aria-label="Résumé du mois"><div class="lbl">'+esc(lbl)+'</div><div class="big num">'+(S.ready?money(c.reste):"…")+'</div><div class="sub">'+(S.ready?sub:"Chargement de ton carnet…")+'</div>'+
+     (c.carry?'<div class="carry num">Dont report du mois précédent : '+(c.carry>0?"+":"")+esc(fmt(c.carry))+'</div>':'')+
      '<div class="trio num"><div><div class="k">Rentrées</div><div class="v">'+fmt0(c.income)+'</div></div><div><div class="k">Charges fixes</div><div class="v">'+fmt0(c.outFix)+'</div></div><div><div class="k">Dépenses</div><div class="v">'+fmt0(c.outTx)+'</div></div></div></section>';
   if(S.ready&&isEmpty){
     h+='<section class="stack"><h2 class="sec-h">Pour commencer</h2><p class="hint">Note ce qui rentre et ce qui part chaque mois. Le carnet calcule ce qu\'il te reste vraiment pour vivre, jour par jour.</p>'+
@@ -850,7 +1042,7 @@ function viewMois(){
       (c.cur?'<span class="today" data-left="'+(c.elapsed*100)+'" data-l="aujourd\'hui"></span>':"")+'</div>'+
       '<p class="hint">'+esc(p.text)+'</p></section>';
   }
-  h+=viewUpcoming(c);
+  h+=viewUpcoming(c)+viewAccounts();
   const cats=Object.keys(c.byCat).sort((a,b)=>c.byCat[b]-c.byCat[a]);
   if(cats.length){
     const max=Math.max.apply(null,cats.map(k=>c.byCat[k]));
@@ -865,29 +1057,93 @@ function viewMois(){
      (recent.length?'<div class="ledger">'+recent.map(opRow).join("")+'</div>':'<div class="ledger"><div class="empty">Rien noté en '+esc(monthName(S.month))+'. Appuie sur Ajouter pour ta première dépense.</div></div>')+'</section>';
   return h;
 }
+// Les opérations selon la recherche et les filtres. Sans filtre, celles du mois affiché.
+// Une recherche sur « mois affiché » regarde tous les mois.
+function opsSelect(){
+  const F=S.opsF, q=norm(S.query.trim()), ym=S.month;
+  let lo=null,hi=null;
+  if(F.period==="month"&&!q){lo=ym;hi=ym;}
+  else if(F.period==="3m"){lo=addMonth(ym,-2);hi=ym;}
+  else if(F.period==="year"){lo=ym.slice(0,4)+"-01";hi=ym.slice(0,4)+"-12";}
+  const lim=v=>{const n=String(v).trim()?parseAmt(v):NaN;return isNaN(n)?null:n;}, min=lim(F.min), max=lim(F.max);
+  return S.tx.filter(t=>{
+    const m=t.date.slice(0,7);
+    if(lo&&(m<lo||m>hi))return false;
+    if(S.filter!=="all"&&t.type!==S.filter)return false;
+    if(F.cat&&(t.type==="tr"||t.cat!==F.cat))return false;
+    if(min!==null&&t.amount<min)return false;
+    if(max!==null&&t.amount>max)return false;
+    if(q&&!norm(t.label+" "+(t.type==="tr"?"virement":cat(t.cat).n)).includes(q))return false;
+    return true;
+  });
+}
+const opsFiltered=()=>!!(S.query.trim()||S.opsF.cat||S.opsF.period!=="month"||S.opsF.min||S.opsF.max);
 function opsBody(){
-  const q=norm(S.query.trim());
-  const byType=l=>S.filter==="all"?l:l.filter(t=>t.type===S.filter);
-  const byTs=l=>l.slice().sort((a,b)=>a.ts-b.ts);
-  if(q){
-    const list=byType(S.tx).filter(t=>norm(t.label+" "+cat(t.cat).n).includes(q));
+  const list=opsSelect().sort((a,b)=>a.ts-b.ts);
+  if(opsFiltered()){
     const sOut=sum(list.filter(t=>t.type==="out")), sIn=sum(list.filter(t=>t.type==="in"));
     const parts=[];if(sOut)parts.push(fmt(sOut)+" dépensés");if(sIn)parts.push(fmt(sIn)+" rentrés");
-    return '<p class="hint">'+list.length+' résultat'+(list.length>1?'s':'')+' sur tous les mois'+(parts.length?' · '+esc(parts.join(", ")):'')+'</p>'+ledger(byTs(list),"Rien ne correspond à ta recherche.");
+    return '<p class="hint">'+list.length+' résultat'+(list.length>1?'s':'')+(parts.length?' · '+esc(parts.join(", ")):'')+'</p>'+ledger(list,"Rien ne correspond à ta recherche.");
   }
-  const c=compute(S.month);
-  let h="";
-  if(c.rec.length) h+='<p class="hint">+ '+c.rec.length+' opération'+(c.rec.length>1?'s':'')+' fixe'+(c.rec.length>1?'s':'')+' comptée'+(c.rec.length>1?'s':'')+' chaque mois. <button class="link" data-goto="budgets">Voir les fixes</button></p>';
-  return h+ledger(byTs(byType(c.txs)));
+  const n=compute(S.month).rec.length;
+  const h=n?'<p class="hint">+ '+n+' opération'+(n>1?'s':'')+' fixe'+(n>1?'s':'')+' comptée'+(n>1?'s':'')+' ce mois-ci. <button class="link" data-goto="budgets">Voir les fixes</button></p>':"";
+  return h+ledger(list);
 }
 function viewOps(){
   const f=(k,l)=>'<button class="chip" data-filter="'+k+'" aria-pressed="'+(S.filter===k)+'">'+l+'</button>';
+  const F=S.opsF, o=(v,l,cur)=>'<option value="'+esc(v)+'"'+(v===cur?' selected':'')+'>'+esc(l)+'</option>';
+  const active=F.cat||F.period!=="month"||F.min||F.max;
   let h=exampleBanner();
   h+='<div class="row"><h2 class="sec-h plain">Opérations de '+esc(monthName(S.month))+'</h2></div>';
   h+='<input class="search" id="opsSearch" type="search" placeholder="Chercher dans tous les mois (libellé, catégorie)" aria-label="Chercher une opération" autocomplete="off" maxlength="60" value="'+esc(S.query)+'">';
-  h+='<div class="chips">'+f("all","Tout")+f("out","Dépenses")+f("in","Rentrées")+'</div>';
+  h+='<div class="chips">'+f("all","Tout")+f("out","Dépenses")+f("in","Rentrées")+(accounts().length>1?f("tr","Virements"):'')+'</div>';
+  h+='<details id="opsFilters"'+(S.opsFOpen||active?' open':'')+'><summary>Filtres'+(active?' (actifs)':'')+'</summary><div class="filters">'+
+    '<label class="f">Catégorie<select id="opsCat">'+o("","Toutes",F.cat)+Object.keys(CAT).map(k=>o(k,CAT[k].n,F.cat)).join("")+'</select></label>'+
+    '<label class="f">Période<select id="opsPeriod">'+o("month","Mois affiché",F.period)+o("3m","3 derniers mois",F.period)+o("year","Année affichée",F.period)+o("all","Tout",F.period)+'</select></label>'+
+    '<label class="f">Montant minimum<input id="opsMin" inputmode="decimal" autocomplete="off" placeholder="0" value="'+esc(F.min)+'"></label>'+
+    '<label class="f">Montant maximum<input id="opsMax" inputmode="decimal" autocomplete="off" placeholder="1 000" value="'+esc(F.max)+'"></label>'+
+    '</div>'+(active?'<button class="link" data-act="clearFilters">Effacer les filtres</button>':'')+'</details>';
   h+='<div class="stack gap18" id="opsList">'+opsBody()+'</div>';
   return h;
+}
+function viewBilan(){
+  const outs=Object.keys(CAT).filter(k=>CAT[k].t==="out"&&k!=="epargne"), n=S.statRange, months=[];
+  for(let i=n-1;i>=0;i--)months.push(addMonth(S.month,-i));
+  const spend={};
+  S.tx.forEach(t=>{if(t.type!=="out")return;const m=t.date.slice(0,7);if(!months.includes(m))return;spend[t.cat]=spend[t.cat]||{};spend[t.cat][m]=(spend[t.cat][m]||0)+t.amount;});
+  const tot=k=>Object.values(spend[k]||{}).reduce((a,b)=>a+b,0);
+  const key=S.statCat&&isCat(S.statCat)&&outs.includes(S.statCat)?S.statCat:outs.slice().sort((a,b)=>tot(b)-tot(a))[0];
+  const vals=months.map(m=>round2((spend[key]||{})[m]||0)), max=Math.max(0,...vals), total=vals.reduce((a,b)=>a+b,0);
+  const best=max>0?months[vals.indexOf(max)]:null;
+  const opt=k=>'<option value="'+esc(k)+'"'+(k===key?' selected':'')+'>'+esc(CAT[k].n)+'</option>';
+  const rng=(v,l)=>'<button class="chip" data-range="'+v+'" aria-pressed="'+(n===v)+'">'+l+'</button>';
+  let h='<section class="card"><h2>Évolution par catégorie</h2><label class="f">Catégorie<select id="statCat">'+outs.map(opt).join("")+'</select></label>'+
+    '<div class="chips">'+rng(6,"6 mois")+rng(12,"12 mois")+'</div>'+
+    '<p class="hint">'+(best?'En moyenne '+esc(fmt(total/n))+' par mois. Le plus haut : '+esc(fmt(max))+' en '+esc(monthLabel(best))+'.':'Aucune dépense sur cette période.')+'</p>'+
+    '<div class="trend'+(n===12?' n12':'')+'">'+months.map((m,i)=>{
+      const title=monthLabel(m)+" : "+fmt(vals[i]);
+      return '<button data-month="'+m+'" aria-current="'+(m===S.month)+'" aria-label="'+esc(title)+'" title="'+esc(title)+'">'+(n===6?'<span class="tv num">'+esc(fmt0(vals[i]))+'</span>':'')+
+        '<span class="plot" data-rows="100fr 0fr"><span class="pos"><i data-h="'+(max?vals[i]/max*100:0)+'"></i></span><span class="neg"></span></span>'+
+        '<span class="tm">'+esc(monthDate(m).toLocaleDateString("fr-FR",{month:n===12?"narrow":"short"}))+'</span></button>';
+    }).join("")+'</div></section>';
+  // Bilan de l'année : seuls les mois déjà commencés comptent.
+  const y=S.year, cur=thisYm(), am=acctMap(), by=txByMonth(), lines=[];
+  let inc=0,fix=0,out=0;const cats={};
+  for(let i=1;i<=12;i++){
+    const ym=y+"-"+pad(i);if(ym>cur)break;
+    const t=by.get(ym)||[], c=monthCore(ym,t,am);
+    if(!t.length&&!c.rec.length)continue;
+    inc+=c.income;fix+=c.outFix;out+=c.outTx;lines.push({ym,net:c.net});
+    c.btx.forEach(x=>{if(x.type==="out")cats[x.cat]=(cats[x.cat]||0)+x.amount;});
+  }
+  const top=Object.keys(cats).sort((a,b)=>cats[b]-cats[a]).slice(0,5), net=inc-fix-out;
+  h+='<section class="card"><div class="row"><h2>Bilan de l\'année</h2><div class="yearnav"><button data-year="'+(y-1)+'" aria-label="Année précédente">‹</button><b class="num">'+y+'</b><button data-year="'+(y+1)+'" aria-label="Année suivante">›</button></div></div>';
+  if(!lines.length)h+='<p class="hint">Rien de noté pour cette année.</p>';
+  else h+='<div class="lines">'+[["Rentrées",inc],["Charges fixes",-fix],["Dépenses",-out]].map(x=>'<div class="line month-line"><span class="l">'+x[0]+'</span><b class="num">'+esc(fmt(x[1]))+'</b></div>').join("")+
+    '</div><div class="acct-total"><span>'+(net>=0?'Il t\'est resté':'Tu as dépensé en plus')+'</span><span class="num">'+esc(fmt(Math.abs(net)))+'</span></div>'+
+    (top.length?'<div class="day">Où est parti ton argent</div><div class="lines">'+top.map(k=>'<div class="line month-line"><span class="l">'+esc(cat(k).n)+'</span><b class="num">'+esc(fmt(cats[k]))+'</b></div>').join("")+'</div>':'')+
+    '<div class="day">Mois par mois</div><div class="lines">'+lines.map(x=>'<div class="line month-line"><span class="l cap">'+esc(monthName(x.ym))+'</span><b class="num">'+esc(fmt(x.net))+'</b></div>').join("")+'</div>';
+  return h+'</section>';
 }
 function viewBudgets(){
   const c=compute(S.month);
@@ -907,12 +1163,18 @@ function viewBudgets(){
         '<p class="hint">'+esc(goalHint(g,total))+'</p><div class="split"><button class="link" data-move="'+esc(g.id)+'" data-dir="out">Verser</button>'+(total>0?'<button class="link" data-move="'+esc(g.id)+'" data-dir="in">Retirer</button>':'')+'</div></div>';}).join("")+'</div>'
       :'<p class="hint pull">Vacances, permis, matelas de sécurité… Chaque versement est déduit de ton reste à vivre.</p>')+'</section>';
   const all=(S.profile.recurring||[]).slice().sort((a,b)=>(a.type===b.type?b.amount-a.amount:a.type==="in"?-1:1));
-  const rec=all.filter(r=>!r.until), stopped=all.filter(r=>r.until);
-  h+='<section class="stack"><div class="row"><h2 class="sec-h">Fixes chaque mois</h2><button class="link" data-act="addFixed">+ Ajouter</button></div>'+
-    '<p class="hint">Salaire, loyer, forfait, assurance, crédit… Ils sont comptés automatiquement tous les mois.</p>'+
-    (rec.length?'<div class="ledger">'+rec.map(r=>{const k=cat(r.cat);return '<button class="op" data-fixed="'+esc(r.id)+'"><span class="ic" data-bg="'+k.c+'">'+esc(k.n.charAt(0))+'</span><span class="t"><b>'+esc(r.label||k.n)+(r.example?'<span class="tag">exemple</span>':'')+'</b><span>'+esc(k.n)+' · '+(r.day?'le '+r.day+' du mois':'chaque mois')+'</span></span><span class="m num'+(r.type==="in"?" in":"")+'">'+(r.type==="in"?"+":"−")+fmt(+r.amount)+'</span></button>';}).join("")+'</div>'
+  const rec=all.filter(r=>!r.until), stopped=all.filter(r=>r.until), cur=thisYm();
+  const freqLabel=r=>{
+    if(r.freq==="week")return "chaque "+WEEKDAYS[r.wd];
+    if(r.freq==="quarter")return "tous les 3 mois";
+    if(r.freq==="year")return "chaque année"+(r.since?" en "+monthName(r.since):"");
+    return r.day?"le "+r.day+" du mois":"chaque mois";
+  };
+  h+='<section class="stack"><div class="row"><h2 class="sec-h">Fixes</h2><button class="link" data-act="addFixed">+ Ajouter</button></div>'+
+    '<p class="hint">Salaire, loyer, forfait, assurance, crédit… Ils sont comptés automatiquement, à la fréquence que tu choisis.</p>'+
+    (rec.length?'<div class="ledger">'+rec.map(r=>{const k=cat(r.cat);return '<button class="op" data-fixed="'+esc(r.id)+'"><span class="ic" data-bg="'+k.c+'">'+esc(k.n.charAt(0))+'</span><span class="t"><b>'+esc(r.label||k.n)+(r.example?'<span class="tag">exemple</span>':'')+'</b><span>'+esc(k.n)+' · '+esc(freqLabel(r))+'</span></span><span class="m num'+(r.type==="in"?" in":"")+'">'+(r.type==="in"?"+":"−")+fmt(+amountAt(r,cur))+'</span></button>';}).join("")+'</div>'
       :'<div class="ledger"><div class="empty">Aucun fixe pour l\'instant.</div></div>')+
-    (rec.length?'<div class="row tight"><span class="hint">Total fixe sortant</span><b class="num">'+fmt(sum(rec.filter(r=>r.type==="out")))+'</b></div>':'')+
+    (rec.length?'<div class="row tight"><span class="hint">Fixes sortants ce mois-ci</span><b class="num">'+fmt(sum(activeFixes(cur).filter(r=>r.type==="out")))+'</b></div>':'')+
     (stopped.length?'<div class="day">Fixes arrêtés</div><div class="ledger">'+stopped.map(r=>{const k=cat(r.cat);return '<button class="op" data-fixed="'+esc(r.id)+'"><span class="ic" data-bg="'+k.c+'">'+esc(k.n.charAt(0))+'</span><span class="t"><b>'+esc(r.label||k.n)+'</b><span>Compté jusqu\'en '+esc(monthLabel(r.until))+'</span></span><span class="m num">'+fmt(+amountAt(r,r.until))+'</span></button>';}).join("")+'</div>':'')+'</section>';
   return h;
 }
@@ -932,10 +1194,15 @@ function viewReglages(){
   h+='</section>';
   h+='<section class="card"><h2>Synchronisation</h2>';
   if(S.sync)h+='<p class="hint pull"><span class="state">Activée</span> avec <b>'+esc(S.sync.repo)+'</b>. Tes appareils échangent tout seuls un fichier chiffré sur ton appareil : GitHub ne peut pas le lire.</p><p class="hint" id="syncState" role="status">'+esc(syncStateText())+'</p>'+
-    '<div class="actions"><button class="btn" data-act="syncNow">Synchroniser maintenant</button><button class="btn ghost" data-act="syncToken">Changer le jeton</button><button class="btn ghost" data-act="syncOff">Désactiver</button></div>';
+    '<div class="actions"><button class="btn" data-act="syncNow">Synchroniser maintenant</button><button class="btn ghost" data-act="syncToken">Changer le jeton</button><button class="btn ghost" data-act="syncPhrase">Changer la phrase</button><button class="btn ghost" data-act="syncOff">Désactiver</button></div>';
   else if(!on)h+='<p class="hint pull">Retrouve ton carnet sur tous tes appareils, avec un dépôt GitHub privé. Active d\'abord le verrouillage ci-dessus : c\'est lui qui protège ton jeton GitHub sur cet appareil.</p>';
   else h+='<p class="hint pull">Retrouve ton carnet sur tous tes appareils, avec un dépôt GitHub privé. Tes données sont chiffrées avant l\'envoi : GitHub ne peut pas les lire.</p><div class="actions"><button class="btn" data-act="syncSetup">Configurer la synchro</button></div>';
   h+='</section>';
+  const cy=S.profile.carry, cyOn=!!(cy&&cy.on);
+  h+='<section class="card"><h2>Report du solde</h2><p class="hint pull"><span class="state">'+(cyOn?'Activé depuis '+esc(monthLabel(cy.from))+'.':'Désactivé.')+'</span> Ce qu\'il te reste à la fin d\'un mois s\'ajoute au mois suivant, en positif comme en négatif. Sinon, chaque mois repart de zéro.</p>'+
+    '<div class="actions"><button class="btn'+(cyOn?' ghost':'')+'" data-act="carrySetup">'+(cyOn?'Modifier':'Activer le report')+'</button>'+(cyOn?'<button class="btn ghost" data-act="carryOff">Désactiver</button>':'')+'</div></section>';
+  h+='<section class="card"><div class="row"><h2>Mes comptes</h2><button class="link" data-act="addAcct">+ Ajouter</button></div><p class="hint pull">Compte courant, livret, espèces… Touche un compte pour le renommer ou corriger son solde.</p><div class="catlist">'+
+    accounts().map(a=>'<button class="catrow" data-acct="'+esc(a.id)+'"><span>'+esc(a.name)+'</span><small class="num">'+esc(fmt(acctBalance(a)))+(a.budget===false?' · hors budget':'')+'</small></button>').join("")+'</div></section>';
   const lb=S.profile.lastBackup;
   h+='<section class="card"><h2>Sauvegarde</h2><p class="hint pull"><span class="state">'+(lb?'Dernière sauvegarde : '+esc(lb.slice(8)+"/"+lb.slice(5,7)+"/"+lb.slice(0,4))+'.':'Aucune sauvegarde pour l\'instant.')+'</span> '+(S.sync?'Garde une copie même avec la synchro : une erreur ou une suppression se propage à tous tes appareils.':'Tes données sont gardées sur cet appareil uniquement. Exporte-les de temps en temps, et importe le fichier sur un autre appareil pour les retrouver.')+' Choisis le fichier chiffré si tu le ranges sur un cloud ou l\'envoies par mail.</p>'+
     '<div class="actions">'+(canCrypto?'<button class="btn" data-act="exportEnc">Exporter (chiffré)</button>':'')+'<button class="btn ghost" data-act="export">Exporter (non chiffré)</button><button class="btn ghost" data-act="import">Importer un fichier</button></div></section>';
@@ -955,7 +1222,7 @@ function viewReglages(){
 function render(){
   if(SEC.locked)return;
   $("#mLabel").textContent=monthLabel(S.month);
-  const v=S.tab==="ops"?viewOps():S.tab==="budgets"?viewBudgets():S.tab==="reglages"?viewReglages():viewMois();
+  const v=S.tab==="ops"?viewOps():S.tab==="budgets"?viewBudgets():S.tab==="bilan"?viewBilan():S.tab==="reglages"?viewReglages():viewMois();
   $("#view").innerHTML=v;
   applyStyles($("#view"));
   document.querySelectorAll(".nav button").forEach(b=>b.setAttribute("aria-current",b.dataset.tab===S.tab?"page":"false"));
@@ -976,13 +1243,35 @@ function drawCats(){
   box.innerHTML=Object.keys(CAT).filter(k=>CAT[k].t===SH.type&&(!CAT[k].hidden||k===SH.cat)).map(k=>'<button type="button" class="chip" data-cat="'+esc(k)+'" aria-pressed="'+(SH.cat===k)+'"><span class="dot inl" data-bg="'+esc(CAT[k].c)+'"></span>'+esc(CAT[k].n)+'</button>').join("");
   applyStyles(box);
 }
-function setType(t){SH.type=t;document.querySelectorAll("#shType button").forEach(b=>b.setAttribute("aria-pressed",b.dataset.t===t));
-  if(cat(SH.cat).t!==t)SH.cat=firstCat(t);drawCats();drawSug();updOk();}
+function setType(t){
+  SH.type=t;document.querySelectorAll("#shType button").forEach(b=>b.setAttribute("aria-pressed",b.dataset.t===t));
+  if(t==="tr"){SH.mode="tx";SH.freq="once";$("#fFreq").value="once";}
+  else if(cat(SH.cat).t!==t)SH.cat=firstCat(t);
+  drawCats();drawSug();drawFreq();updOk();
+}
+// Adapte la fenêtre de saisie : une seule fois, régulier, ou virement.
+function drawFreq(){
+  const tr=SH.type==="tr", fixed=SH.mode==="fixed", week=SH.freq==="week";
+  $("#fFreqWrap").hidden=!!SH.id||tr;
+  $("#fCatsWrap").hidden=tr;$("#fTrWrap").hidden=!tr;
+  $("#fDateWrap").hidden=fixed;
+  $("#fDayWrap").hidden=!fixed||week;$("#fWdWrap").hidden=!fixed||!week;
+  $("#fSinceWrap").hidden=!fixed;
+  $("#fFromWrap").hidden=!(fixed&&SH.id&&!SH.stopped);
+  $("#fAccWrap").hidden=tr||accounts().length<2;
+  $("#shTitle").textContent=tr?(SH.id?"Modifier le virement":"Nouveau virement"):fixed?(SH.id?"Modifier le fixe":"Nouveau fixe"):(SH.id?"Modifier l'opération":"Nouvelle opération");
+  const fx=$("#fFixHint");let note="";
+  if(fixed&&SH.stopped&&SH.fixedR)note="Ce fixe ne compte plus depuis "+monthLabel(addMonth(SH.fixedR.until,1))+". Tu peux le reprendre à partir du mois de ton choix, ou le supprimer : il disparaîtra alors aussi des mois passés.";
+  else if(fixed&&SH.id&&fixStoppable(SH.fixedR))note="Change le montant à partir du mois de ton choix, les mois d'avant ne bougent pas. Arrêter ce fixe ne touche pas non plus aux mois passés.";
+  else if(fixed&&!SH.id)note="Cette somme sera comptée automatiquement à partir du mois choisi, jusqu'à ce que tu l'arrêtes.";
+  fx.textContent=note;fx.hidden=!note;
+}
+function fillAcc(sel,val){const el=$(sel);el.innerHTML=accounts().map(a=>'<option value="'+esc(a.id)+'">'+esc(a.name)+'</option>').join("");el.value=val;}
 // Libellés déjà utilisés, pour proposer un ajout en un geste.
 function labelStats(){
   const m=new Map();
   S.tx.forEach(t=>{
-    if(!t.label||t.example||t.goal)return;
+    if(!t.label||t.example||t.goal||t.type==="tr")return;
     const k=t.type+"|"+norm(t.label), e=m.get(k)||{label:t.label,cat:t.cat,type:t.type,n:0,ts:-1};
     e.n++;if(t.ts>=e.ts){e.ts=t.ts;e.cat=t.cat;e.label=t.label;}
     m.set(k,e);
@@ -1023,6 +1312,11 @@ function updOk(){
   if(SH.mode==="goal"){$("#shOk").textContent=SH.id?"Enregistrer":"Ajouter l'objectif";return;}
   if(SH.mode==="cat"){$("#shOk").textContent=SH.id?"Enregistrer":"Créer la catégorie";return;}
   if(SH.mode==="move"||SH.mode==="csv")return;
+  if(SH.mode==="carry"){$("#shOk").textContent="Activer le report";return;}
+  if(SH.mode==="acct"){$("#shOk").textContent=SH.id?"Enregistrer":"Ajouter le compte";return;}
+  if(SH.mode==="phrase"){$("#shOk").textContent="Changer la phrase";return;}
+  if(SH.type==="tr"){$("#shOk").textContent=SH.id?"Enregistrer":"Ajouter le virement";return;}
+  if(SH.stopped){$("#shOk").textContent="Reprendre ce fixe";return;}
   if(SH.mode==="sync"){$("#shOk").textContent=SH.action==="token"?"Enregistrer":"Activer la synchro";return;}
   if(SH.mode==="pass"){$("#shOk").textContent=PASS[SH.action].ok;return;}
   const w=SH.type==="in"?"la rentrée":"la dépense";
@@ -1030,15 +1324,18 @@ function updOk(){
 }
 const amtStr=v=>v!=null?String(v).replace(".",","):"";
 function clearPass(){["#pCur","#pNew","#pNew2"].forEach(s=>{$(s).value="";});}
+let sheetPrev=null;
+// Pendant qu'une fenêtre est ouverte, le reste de la page n'est plus atteignable au clavier ni au lecteur d'écran.
+function setInert(on){["#app","#nav","#fab"].forEach(s=>{$(s).inert=on;});}
 function openSheet(o){
+  if($("#veil").hidden){sheetPrev=document.activeElement;setInert(true);}
   SH=Object.assign({mode:"tx",type:"out",cat:firstCat("out"),id:null,armed:false,catTouched:false},o);
-  const isB=SH.mode==="budget", isG=SH.mode==="goal", isP=SH.mode==="pass", isM=SH.mode==="move", isC=SH.mode==="cat", isCsv=SH.mode==="csv", isS=SH.mode==="sync", isOp=!isB&&!isG&&!isP&&!isM&&!isC&&!isCsv&&!isS;
-  $("#shSync").hidden=!isS;
+  const isB=SH.mode==="budget", isG=SH.mode==="goal", isP=SH.mode==="pass", isM=SH.mode==="move", isC=SH.mode==="cat", isCsv=SH.mode==="csv", isS=SH.mode==="sync", isPh=SH.mode==="phrase", isCy=SH.mode==="carry", isAc=SH.mode==="acct", isOp=!isB&&!isG&&!isP&&!isM&&!isC&&!isCsv&&!isS&&!isPh&&!isCy&&!isAc;
+  $("#shSync").hidden=!isS;$("#shPhrase").hidden=!isPh;$("#shCarry").hidden=!isCy;$("#shAcct").hidden=!isAc;
   $("#shOp").hidden=!isOp;$("#shBudget").hidden=!isB;$("#shGoal").hidden=!isG;$("#shPass").hidden=!isP;$("#shMove").hidden=!isM;$("#shCat").hidden=!isC;$("#shCsv").hidden=!isCsv;$("#shErr").hidden=true;
   $("#shDel").hidden=!(SH.id||(isB&&SH.has));$("#shDel").classList.remove("armed");
   $("#shDel").textContent=isB?"Retirer le plafond":"Supprimer";
   $("#shOk").hidden=false;$("#shOk").disabled=false;
-  $("#fDateWrap").hidden=SH.mode!=="tx";$("#fDayWrap").hidden=SH.mode!=="fixed";
   let focus="#fAmount";
   if(isB){$("#shTitle").textContent=cat(SH.cat).n;$("#bHint").textContent="Combien tu t'autorises à dépenser en "+cat(SH.cat).n.toLowerCase()+" chaque mois ?";$("#bAmount").value=SH.has?amtStr(SH.amount):"";focus="#bAmount";}
   else if(isG){
@@ -1069,8 +1366,27 @@ function openSheet(o){
     $("#sRepo").value=t?S.sync.repo:"";$("#sToken").value="";$("#sPass").value="";$("#sPass2").value="";
     focus=t?"#sToken":"#sRepo";
   }
+  else if(isPh){
+    $("#shTitle").textContent="Changer la phrase de synchro";
+    ["#phCur","#phNew","#phNew2"].forEach(s=>{$(s).value="";});focus="#phCur";
+  }
+  else if(isCy){
+    const cy=S.profile.carry, main=accounts()[0];
+    $("#shTitle").textContent="Report du solde";
+    $("#carFrom").value=cy?cy.from:thisYm();$("#carOpening").value=cy?amtStr(main.opening):"";focus="#carOpening";
+  }
+  else if(isAc){
+    const a=SH.id?accounts().find(x=>x.id===SH.id):null, isMain=SH.id===MAIN;
+    $("#shTitle").textContent=a?"Modifier le compte":"Nouveau compte";
+    $("#acName").value=a?a.name:"";$("#acFrom").value=a?a.from:thisYm();$("#acOpening").value=a?amtStr(a.opening):"";$("#acReal").value="";
+    $("#acRealWrap").hidden=!a;$("#acBudgetWrap").hidden=isMain;$("#acBudget").checked=a?a.budget!==false:false;
+    $("#shDel").hidden=!a||isMain;
+    const note=a?"Solde calculé aujourd'hui : "+fmt(acctBalance(a))+".":"Un compte hors reste à vivre (un livret, par exemple) garde son propre solde.";
+    $("#acHint").textContent=note;$("#acHint").hidden=false;focus="#acName";
+  }
   else if(isCsv){
-    $("#shTitle").textContent="Importer un relevé";$("#csvSkipFix").checked=true;
+    $("#shTitle").textContent="Importer un relevé";$("#csvSkipFix").checked=true;$("#csvSkipNear").checked=true;
+    fillAcc("#csvAcc",MAIN);$("#csvAccWrap").hidden=accounts().length<2;
     csvFill();csvRefresh();focus="#csvDate";
   }
   else if(isP){
@@ -1082,29 +1398,34 @@ function openSheet(o){
     focus=p.cur?"#pCur":"#pNew";
   }
   else{
-    $("#shTitle").textContent=SH.mode==="fixed"?(SH.id?"Modifier le fixe":"Nouveau fixe mensuel"):(SH.id?"Modifier l'opération":"Nouvelle opération");
+    const r=SH.mode==="fixed"&&SH.id?(S.profile.recurring||[]).find(x=>x.id===SH.id):null, cur=thisYm();
+    SH.fixedR=r||null;SH.stopped=!!(r&&r.until);
+    SH.freq=SH.freq||(SH.mode==="fixed"?"month":"once");
+    $("#fFreq").value=SH.freq;$("#fWd").value=String(typeof SH.wd==="number"?SH.wd:1);
     $("#fAmount").value=amtStr(SH.amount);
-    $("#fLabel").value=SH.label||"";$("#fDate").value=SH.date||(S.month===thisYm()?todayStr():S.month+"-01");
+    $("#fLabel").value=SH.label||"";$("#fDate").value=SH.date||(S.month===cur?todayStr():S.month+"-01");
     $("#fDay").value=SH.day||"";
-    SH.stats=SH.mode==="tx"&&!SH.id?labelStats():[];
+    const since=r?(r.since||""):(SH.since||S.month);
+    $("#fSince").value=since;$("#fFrom").value=since&&since>cur?since:cur;
+    const many=accounts().length>1, acc=accounts();
+    fillAcc("#fAcc",SH.acc||MAIN);fillAcc("#fTrFrom",SH.from||MAIN);fillAcc("#fTrTo",SH.to||(many?acc[1].id:MAIN));
+    const offerTr=many&&!(SH.mode==="fixed"&&SH.id);
+    $("#fTrBtn").hidden=!offerTr;$("#shType").classList.toggle("three",offerTr);
+    SH.stats=!SH.id?labelStats():[];
     setType(SH.type);
-    const fx=$("#fFixHint");let note="";
-    if(SH.mode==="fixed"&&SH.id){
-      const r=(S.profile.recurring||[]).find(x=>x.id===SH.id);
-      if(r&&r.until){
-        note="Ce fixe ne compte plus depuis "+monthLabel(addMonth(r.until,1))+". Pour le reprendre, crée un nouveau fixe. Le supprimer le retire aussi des mois passés.";
-        $("#shOk").hidden=true;$("#shDel").textContent="Supprimer définitivement";
-      }else if(fixStoppable(r)){
-        note="Un nouveau montant compte à partir de ce mois-ci, les mois passés ne changent pas. Arrêter ce fixe fonctionne pareil.";
-        $("#shDel").textContent="Arrêter ce fixe";
-      }
-    }
-    fx.textContent=note;fx.hidden=!note;
+    if(SH.stopped)$("#shDel").textContent="Supprimer définitivement";
+    else if(fixStoppable(r))$("#shDel").textContent="Arrêter ce fixe";
   }
   updOk();$("#veil").hidden=false;
   setTimeout(()=>{try{$(focus).focus();}catch(e){}},60);
 }
-function closeSheet(){$("#veil").hidden=true;clearPass();["#sToken","#sPass","#sPass2"].forEach(s=>{$(s).value="";});SH.box=null;SH.csv=null;SH.stats=null;}
+function closeSheet(){
+  const wasOpen=!$("#veil").hidden;
+  $("#veil").hidden=true;clearPass();["#sToken","#sPass","#sPass2","#phCur","#phNew","#phNew2"].forEach(s=>{$(s).value="";});SH.box=null;SH.csv=null;SH.stats=null;
+  setInert(false);
+  if(wasOpen&&sheetPrev&&sheetPrev.isConnected){try{sheetPrev.focus();}catch(e){}}
+  sheetPrev=null;
+}
 function showErr(m){const e=$("#shErr");e.textContent=m;e.hidden=false;}
 async function submitPass(){
   const p=PASS[SH.action], action=SH.action, box=SH.box, btn=$("#shOk");
@@ -1142,7 +1463,28 @@ $("#sheet").addEventListener("submit",ev=>{
   ev.preventDefault();
   if(SH.mode==="pass"){submitPass();return;}
   if(SH.mode==="sync"){submitSync();return;}
+  if(SH.mode==="phrase"){submitPhrase();return;}
   if(SH.mode==="csv"){csvCommit();return;}
+  if(SH.mode==="carry"){
+    const from=$("#carFrom").value.trim(), raw=$("#carOpening").value.trim(), opening=raw?bankAmount(raw):0;
+    if(!validYm(from)){showErr("Indique le mois de départ sous la forme 2026-11.");return;}
+    if(opening===null){showErr("Ce solde n'est pas valide. Exemples : 350 ou -120,50.");return;}
+    const l=accounts().map(a=>Object.assign({},a));l[0].opening=opening;l[0].from=from;
+    S.profile.accounts=l;S.profile.carry={on:true,from};api.saveProfile();closeSheet();toast("Report activé");return;
+  }
+  if(SH.mode==="acct"){
+    const name=cleanLabel($("#acName").value).slice(0,30), from=$("#acFrom").value.trim(), rawO=$("#acOpening").value.trim(), rawR=$("#acReal").value.trim();
+    const opening=rawO?bankAmount(rawO):0, real=rawR?bankAmount(rawR):0;
+    if(!name){showErr("Donne un nom à ce compte.");return;}
+    if(!validYm(from)){showErr("Indique le mois de départ sous la forme 2026-11.");return;}
+    if(opening===null||real===null){showErr("Ce solde n'est pas valide. Exemples : 350 ou -120,50.");return;}
+    const l=accounts().map(x=>Object.assign({},x));
+    if(!SH.id&&l.length>=MAX_ACCOUNTS){showErr("Tu as atteint le nombre maximum de comptes.");return;}
+    const a={id:SH.id||uid(),name,budget:SH.id===MAIN?true:$("#acBudget").checked,opening,from};
+    S.profile.accounts=SH.id?l.map(x=>x.id===SH.id?a:x):l.concat([a]);
+    if(rawR)a.opening=round2(a.opening+real-acctBalance(a));
+    api.saveProfile();closeSheet();toast(SH.id?"Compte modifié":"Compte ajouté");return;
+  }
   if(SH.mode==="cat"){
     const name=cleanLabel($("#cName").value).slice(0,30);
     if(!name){showErr("Donne un nom à ta catégorie.");return;}
@@ -1179,30 +1521,54 @@ $("#sheet").addEventListener("submit",ev=>{
     S.profile.goals=SH.id?list.map(x=>x.id===SH.id?g:x):list.concat([g]);
     api.saveProfile();closeSheet();toast(SH.id?"Objectif modifié":"Objectif ajouté");return;
   }
+  // Reprendre un fixe arrêté crée un nouveau fixe : l'ancien garde l'historique des mois passés.
+  if(SH.mode==="fixed"&&SH.stopped&&SH.fixedR){
+    const r=SH.fixedR;
+    openSheet({mode:"fixed",type:r.type,cat:r.cat,amount:amountAt(r,r.until),label:r.label,day:r.day,wd:r.wd,freq:r.freq||"month",acc:r.acc,since:thisYm()});
+    return;
+  }
   const a=parseAmt($("#fAmount").value);
   if(!(a>0)){showErr("Indique un montant valide, par exemple 12,50.");return;}
   const label=cleanLabel($("#fLabel").value);
   if(SH.mode==="fixed"){
     const rec=(S.profile.recurring||[]).slice();
     const prev=rec.find(r=>r.id===SH.id);
-    const dayRaw=$("#fDay").value.trim(), day=dayRaw?+dayRaw:null;
+    const week=SH.freq==="week", dayRaw=week?"":$("#fDay").value.trim(), day=dayRaw?+dayRaw:null;
     if(dayRaw&&(!Number.isInteger(day)||day<1||day>31)){showErr("Le jour doit être entre 1 et 31.");return;}
-    const r={id:SH.id||uid(),type:SH.type,cat:SH.cat,amount:a,label,since:prev?prev.since:thisYm()};
+    const sinceRaw=$("#fSince").value.trim(), keepNoSince=prev&&!prev.since&&!sinceRaw;
+    if(!keepNoSince&&!validYm(sinceRaw)){showErr("Indique le mois de départ sous la forme 2026-11.");return;}
+    const since=keepNoSince?undefined:sinceRaw;
+    const r={id:SH.id||uid(),type:SH.type,cat:SH.cat,amount:a,label};
+    if(since)r.since=since;
     if(day)r.day=day;
+    if(SH.freq&&SH.freq!=="month"&&SH.freq!=="once"){r.freq=SH.freq;if(week)r.wd=+$("#fWd").value;}
+    const accV=accounts().length>1?$("#fAcc").value:(prev&&prev.acc);
+    if(accV&&accV!==MAIN)r.acc=accV;
     if(prev&&prev.example)r.example=true;
-    if(prev&&prev.hist)r.hist=prev.hist.slice();
-    // Le nouveau montant compte à partir de ce mois-ci : on garde l'ancien pour les mois passés.
-    if(prev&&prev.amount!==a&&(!prev.since||prev.since<thisYm())){
-      const u=addMonth(thisYm(),-1);r.hist=r.hist||[];
-      if(!r.hist.some(h=>h.until===u))r.hist.push({until:u,amount:prev.amount});
-    }
+    if(prev&&prev.amount!==a){
+      // Le nouveau montant compte à partir du mois choisi : les mois d'avant gardent le leur.
+      const fromRaw=$("#fFrom").value.trim();
+      if(!validYm(fromRaw)){showErr("Indique le mois du changement sous la forme 2026-11.");return;}
+      const from=since&&fromRaw<since?since:fromRaw, h=histForChange(Object.assign({},prev,{since}),from);
+      if(h)r.hist=h;
+    }else if(prev&&prev.hist)r.hist=prev.hist.slice();
     S.profile.recurring=prev?rec.map(x=>x.id===SH.id?r:x):rec.concat([r]);
     api.saveProfile();closeSheet();toast(prev?"Fixe modifié":"Fixe ajouté");return;
   }
   const date=$("#fDate").value||todayStr();
   if(!validDate(date)){showErr("Cette date n'est pas valide.");return;}
   const prev=S.tx.find(t=>t.id===SH.id);
+  if(SH.type==="tr"){
+    const from=$("#fTrFrom").value, to=$("#fTrTo").value;
+    if(from===to){showErr("Choisis deux comptes différents.");return;}
+    api.putTx({id:SH.id||uid(),type:"tr",cat:"autre",amount:a,label,from,to,date,ts:prev?prev.ts:Date.now()});
+    closeSheet();toast(prev?"Virement modifié":"Virement ajouté");
+    if(date.slice(0,7)!==S.month){S.month=date.slice(0,7);render();}
+    return;
+  }
   const t={id:SH.id||uid(),type:SH.type,cat:SH.cat,amount:a,label,date,ts:prev?prev.ts:Date.now()};
+  const accT=accounts().length>1?$("#fAcc").value:(prev&&prev.acc);
+  if(accT&&accT!==MAIN)t.acc=accT;
   if(prev&&prev.example)t.example=true;
   if(prev&&prev.goal)t.goal=prev.goal;
   const wasIn=SH.type==="in";
@@ -1212,7 +1578,22 @@ $("#sheet").addEventListener("submit",ev=>{
 $("#shDel").addEventListener("click",()=>{
   const b=$("#shDel");
   if(!SH.armed){SH.armed=true;b.classList.add("armed");b.textContent="Confirmer";return;}
-  if(SH.mode==="budget"){const bd=Object.assign({},S.profile.budgets);delete bd[SH.cat];S.profile.budgets=bd;api.saveProfile();toast("Plafond retiré");}
+  const before=stateJson();
+  if(SH.mode==="acct"){
+    const id=SH.id;
+    S.tx=S.tx.map(t=>{
+      if(t.type==="tr"){
+        if(t.from!==id&&t.to!==id)return t;
+        return Object.assign({},t,{from:t.from===id?MAIN:t.from,to:t.to===id?MAIN:t.to});
+      }
+      if(t.acc!==id)return t;
+      const c=Object.assign({},t);delete c.acc;return c;
+    }).filter(t=>t.type!=="tr"||t.from!==t.to);
+    S.profile.recurring=(S.profile.recurring||[]).map(r=>{if(r.acc!==id)return r;const c=Object.assign({},r);delete c.acc;return c;});
+    S.profile.accounts=accounts().filter(a=>a.id!==id);
+    api.saveProfile();toast("Compte supprimé. Ses opérations passent sur le compte courant.");
+  }
+  else if(SH.mode==="budget"){const bd=Object.assign({},S.profile.budgets);delete bd[SH.cat];S.profile.budgets=bd;api.saveProfile();toast("Plafond retiré");}
   else if(SH.mode==="fixed"){
     const r=(S.profile.recurring||[]).find(x=>x.id===SH.id);
     if(fixStoppable(r)){
@@ -1240,6 +1621,11 @@ $("#shDel").addEventListener("click",()=>{
   }
   else{api.delTx(SH.id);toast("Opération supprimée");}
   closeSheet();
+  offerUndo(before);
+});
+$("#fFreq").addEventListener("change",e=>{
+  SH.freq=e.target.value;SH.mode=SH.freq==="once"?"tx":"fixed";
+  drawSug();drawFreq();updOk();
 });
 $("#shType").addEventListener("click",e=>{const b=e.target.closest("button[data-t]");if(b)setType(b.dataset.t);});
 $("#fCats").addEventListener("click",e=>{const b=e.target.closest("[data-cat]");if(!b)return;SH.cat=b.dataset.cat;SH.catTouched=true;drawCats();});
@@ -1294,9 +1680,12 @@ function clearExample(){
 
 /* ---------- events ---------- */
 $("#view").addEventListener("click",e=>{
-  const el=e.target.closest("[data-edit],[data-fixed],[data-budget],[data-goal],[data-move],[data-catedit],[data-act],[data-goto],[data-filter],[data-month],[data-themeset]");if(!el)return;
-  if(el.dataset.edit){const t=S.tx.find(x=>x.id===el.dataset.edit);if(t)openSheet({mode:"tx",id:t.id,type:t.type,cat:t.cat,amount:t.amount,label:t.label,date:t.date});}
-  else if(el.dataset.fixed){const r=(S.profile.recurring||[]).find(x=>x.id===el.dataset.fixed);if(r)openSheet({mode:"fixed",id:r.id,type:r.type,cat:r.cat,amount:r.amount,label:r.label,day:r.day});}
+  const el=e.target.closest("[data-edit],[data-fixed],[data-budget],[data-goal],[data-move],[data-catedit],[data-acct],[data-range],[data-year],[data-act],[data-goto],[data-filter],[data-month],[data-themeset]");if(!el)return;
+  if(el.dataset.edit){const t=S.tx.find(x=>x.id===el.dataset.edit);if(t)openSheet({mode:"tx",id:t.id,type:t.type,cat:t.cat,amount:t.amount,label:t.label,date:t.date,acc:t.acc,from:t.from,to:t.to,freq:"once"});}
+  else if(el.dataset.fixed){const r=(S.profile.recurring||[]).find(x=>x.id===el.dataset.fixed);if(r)openSheet({mode:"fixed",id:r.id,type:r.type,cat:r.cat,amount:r.amount,label:r.label,day:r.day,wd:r.wd,freq:r.freq||"month",acc:r.acc});}
+  else if(el.dataset.acct)openSheet({mode:"acct",id:el.dataset.acct});
+  else if(el.dataset.range){S.statRange=+el.dataset.range===12?12:6;render();}
+  else if(el.dataset.year){S.year=+el.dataset.year;render();}
   else if(el.dataset.budget){const k=el.dataset.budget,b=(S.profile.budgets||{})[k];openSheet({mode:"budget",cat:k,has:!!b,amount:b});}
   else if(el.dataset.goal){const g=(S.profile.goals||[]).find(x=>x.id===el.dataset.goal);if(g)openSheet({mode:"goal",id:g.id,label:g.label,target:g.target,saved:g.saved,date:g.date});}
   else if(el.dataset.move)openSheet({mode:"move",goal:el.dataset.move,dir:el.dataset.dir});
@@ -1312,6 +1701,11 @@ $("#view").addEventListener("click",e=>{
     else if(a==="addFixed")openSheet({mode:"fixed",type:"out",cat:"abos"});
     else if(a==="addOp")openSheet({mode:"tx"});
     else if(a==="addGoal")openSheet({mode:"goal"});
+    else if(a==="clearFilters"){S.opsF={cat:"",period:"month",min:"",max:""};S.opsFOpen=false;render();}
+    else if(a==="carrySetup")openSheet({mode:"carry"});
+    else if(a==="carryOff"){S.profile.carry=Object.assign({},S.profile.carry,{on:false});api.saveProfile();toast("Report désactivé");}
+    else if(a==="addAcct")openSheet({mode:"acct"});
+    else if(a==="syncPhrase")openSheet({mode:"phrase"});
     else if(a==="example")loadExample();
     else if(a==="clearEx")clearExample();
     else if(a==="export")exportData();
@@ -1343,15 +1737,39 @@ $("#view").addEventListener("click",e=>{
   }
 });
 $("#view").addEventListener("input",e=>{
-  if(e.target.id!=="opsSearch")return;
-  S.query=e.target.value;const box=$("#opsList");box.innerHTML=opsBody();applyStyles(box);
+  const id=e.target.id;
+  if(id==="statCat"){S.statCat=e.target.value;render();return;}
+  if(id==="opsSearch")S.query=e.target.value;
+  else if(id==="opsCat")S.opsF.cat=e.target.value;
+  else if(id==="opsPeriod")S.opsF.period=e.target.value;
+  else if(id==="opsMin")S.opsF.min=e.target.value;
+  else if(id==="opsMax")S.opsF.max=e.target.value;
+  else return;
+  const box=$("#opsList");box.innerHTML=opsBody();applyStyles(box);
 });
+$("#view").addEventListener("toggle",e=>{if(e.target.id==="opsFilters")S.opsFOpen=e.target.open;},true);
 $("#view").addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ")&&e.target.matches("[data-budget],[data-goal]")){e.preventDefault();e.target.click();}});
 document.querySelector(".nav").addEventListener("click",e=>{const b=e.target.closest("[data-tab]");if(!b)return;S.tab=b.dataset.tab;render();scrollTo(0,0);});
 $("#prevM").addEventListener("click",()=>{S.month=addMonth(S.month,-1);render();});
 $("#nextM").addEventListener("click",()=>{S.month=addMonth(S.month,1);render();});
 $("#fab").addEventListener("click",()=>openSheet({mode:"tx"}));
-let tT;function toast(m){const t=$("#toast");t.textContent=m;t.hidden=false;clearTimeout(tT);tT=setTimeout(()=>{t.hidden=true;},2600);}
+let tT, UNDO=null;
+function toast(m){UNDO=null;const t=$("#toast");t.textContent=m;t.hidden=false;clearTimeout(tT);tT=setTimeout(()=>{t.hidden=true;},2600);}
+const stateJson=()=>JSON.stringify({tx:S.tx,profile:S.profile});
+// Ajoute « Annuler » au dernier message pendant quelques secondes.
+function offerUndo(before){
+  const t=$("#toast");
+  UNDO={before,after:stateJson()};
+  const b=document.createElement("button");b.type="button";b.className="undo";b.textContent="Annuler";b.addEventListener("click",undoLast);
+  t.appendChild(b);t.hidden=false;
+  clearTimeout(tT);tT=setTimeout(()=>{t.hidden=true;UNDO=null;},8000);
+}
+function undoLast(){
+  const u=UNDO;if(!u)return;
+  // Si la synchro a changé le carnet entre-temps, revenir en arrière ferait perdre ces changements.
+  if(stateJson()!==u.after){toast("Impossible d'annuler : le carnet a changé entre-temps.");return;}
+  applyData(JSON.parse(u.before));saveLocal();render();toast("Annulé");
+}
 
 $("#importFile").addEventListener("change",e=>{const f=e.target.files&&e.target.files[0];if(f)importData(f);e.target.value="";});
 $("#csvFile").addEventListener("change",e=>{const f=e.target.files&&e.target.files[0];if(f)importCsv(f);e.target.value="";});

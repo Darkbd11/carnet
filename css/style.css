@@ -1,4 +1,6 @@
 /* Layout: one-column pocket app — a "carnet" cover card on top, ledger rows below, bottom tab bar + floating add button */
+@font-face{font-family:"Bricolage Grotesque";src:url("../fonts/bricolage-grotesque.woff2") format("woff2");font-weight:200 800;font-display:swap}
+@font-face{font-family:"Instrument Sans";src:url("../fonts/instrument-sans.woff2") format("woff2");font-weight:400 700;font-display:swap}
 :root{
   --bg:#EDF1EF; --surface:#FFFFFF; --sunk:#E3E9E6; --ink:#12302F; --muted:#5A6E6B; --line:#D3DDDA;
   --cover:#133C3A; --cover-ink:#F1F6F4; --cover-muted:#A9C6C1;
@@ -122,7 +124,8 @@ button{font:inherit;color:inherit;cursor:pointer}
 /* nav + fab */
 .nav{position:fixed;left:0;right:0;bottom:0;z-index:20;background:var(--surface);border-top:1px solid var(--line);
   padding:6px max(16px,env(safe-area-inset-right,0px)) calc(6px + env(safe-area-inset-bottom,0px)) max(16px,env(safe-area-inset-left,0px))}
-.nav div{max-width:560px;margin:0 auto;display:grid;grid-template-columns:repeat(4,1fr)}
+.nav div{max-width:560px;margin:0 auto;display:grid;grid-template-columns:repeat(5,1fr)}
+@media (max-width:420px){.nav button{font-size:12px;padding-inline:0}}
 .nav button{border:0;background:transparent;padding:8px 4px;font-size:13px;font-weight:600;color:var(--muted);border-radius:10px;display:flex;flex-direction:column;align-items:center;gap:3px}
 .nav button::before{content:"";width:22px;height:3px;border-radius:3px;background:transparent}
 .nav button[aria-current="page"]{color:var(--ink)}
@@ -214,6 +217,23 @@ label.f select{font:inherit;font-size:16px;font-weight:400;color:var(--ink);back
 #csvPreview .line{padding:9px 12px}
 #csvPreview .line:first-child{border-top:0}
 .btn.ghost:disabled,.btn[disabled]{opacity:.5;cursor:not-allowed}
+
+/* saisie, filtres, annulation */
+.seg.three{grid-template-columns:repeat(3,1fr)}
+.seg.three button{padding-inline:4px;font-size:13.5px}
+label.f select{appearance:auto}
+.toast .undo{border:0;background:transparent;color:inherit;font-weight:700;text-decoration:underline;margin-left:10px;padding:2px 0}
+.cover .carry{font-size:13px;opacity:.85}
+.filters{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:10px}
+.filters input,.filters select,.search.small{font:inherit;font-size:16px;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px;width:100%;min-width:0}
+.acct-total{border-top:1px solid var(--line);padding-top:8px;display:flex;justify-content:space-between;font-weight:600}
+.trend.n12{grid-template-columns:repeat(12,minmax(0,1fr))}
+.trend.n12 .pos,.trend.n12 .neg{width:12px}
+.trend.n12 .tm{font-size:10px}
+.yearnav{display:flex;align-items:center;gap:8px}
+.yearnav button{border:1px solid var(--line);background:var(--surface);border-radius:8px;width:34px;height:34px}
+.line.month-line{grid-template-columns:minmax(0,1fr) auto}
+.line .l.cap{text-transform:capitalize}
 
 /* écran de verrouillage */
 .lock{position:fixed;inset:0;z-index:70;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:16px;overflow:auto}

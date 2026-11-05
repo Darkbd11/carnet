@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <!-- Aucune ressource externe, aucun script ni style en ligne. La seule connexion autorisée est l'API GitHub, pour la synchro. "file:" sert seulement quand on double-clique sur index.html. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file:; img-src 'self' file:; connect-src https://api.github.com; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file:; style-src 'self' file:; img-src 'self' file:; font-src 'self' file:; connect-src https://api.github.com; manifest-src 'self'; worker-src 'self'; base-uri 'none'; form-action 'none'">
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Carnet — Mon argent</title>
@@ -35,6 +35,7 @@
   <button data-tab="mois" aria-current="page">Mon mois</button>
   <button data-tab="ops">Opérations</button>
   <button data-tab="budgets">Budgets</button>
+  <button data-tab="bilan">Bilan</button>
   <button data-tab="reglages">Réglages</button>
 </div></nav>
 
@@ -56,13 +57,35 @@
       <div class="seg" id="shType">
         <button type="button" data-t="out" aria-pressed="true">Dépense</button>
         <button type="button" data-t="in" aria-pressed="false">Rentrée d'argent</button>
+        <button type="button" data-t="tr" aria-pressed="false" id="fTrBtn" hidden>Virement</button>
       </div>
       <div class="amount"><input id="fAmount" inputmode="decimal" placeholder="0,00" autocomplete="off" aria-label="Montant"><em>€</em></div>
-      <div class="stack gap6"><span class="day flush">Catégorie</span><div class="chips" id="fCats"></div></div>
+      <label class="f" id="fFreqWrap">Ça revient ?
+        <select id="fFreq">
+          <option value="once">Une seule fois</option>
+          <option value="week">Chaque semaine</option>
+          <option value="month">Chaque mois</option>
+          <option value="quarter">Tous les 3 mois</option>
+          <option value="year">Chaque année</option>
+        </select>
+      </label>
+      <div class="stack gap6" id="fCatsWrap"><span class="day flush">Catégorie</span><div class="chips" id="fCats"></div></div>
+      <div class="grid2" id="fTrWrap" hidden>
+        <label class="f">Depuis<select id="fTrFrom"></select></label>
+        <label class="f">Vers<select id="fTrTo"></select></label>
+      </div>
       <div class="grid2">
         <label class="f">Libellé<input id="fLabel" placeholder="ex. Courses Lidl" maxlength="60" autocomplete="off"></label>
         <label class="f" id="fDateWrap">Date<input id="fDate" type="date"></label>
         <label class="f" id="fDayWrap">Jour dans le mois (facultatif)<input id="fDay" inputmode="numeric" placeholder="ex. 5" maxlength="2" autocomplete="off"></label>
+        <label class="f" id="fWdWrap" hidden>Jour de la semaine
+          <select id="fWd">
+            <option value="1">Lundi</option><option value="2">Mardi</option><option value="3">Mercredi</option><option value="4">Jeudi</option><option value="5">Vendredi</option><option value="6">Samedi</option><option value="0">Dimanche</option>
+          </select>
+        </label>
+        <label class="f" id="fSinceWrap" hidden>Compté à partir de<input id="fSince" type="month" placeholder="2026-11"></label>
+        <label class="f" id="fFromWrap" hidden>Nouveau montant à partir de<input id="fFrom" type="month" placeholder="2026-11"></label>
+        <label class="f" id="fAccWrap" hidden>Compte<select id="fAcc"></select></label>
       </div>
       <div class="chips" id="fSug" aria-label="Suggestions" hidden></div>
       <p class="hint" id="fFixHint" hidden></p>
@@ -106,7 +129,9 @@
         <label class="f">ou Débit<select id="csvDebit" data-k="debit"></select></label>
         <label class="f">et Crédit<select id="csvCredit" data-k="credit"></select></label>
       </div>
+      <label class="f" id="csvAccWrap" hidden>Importer dans le compte<select id="csvAcc"></select></label>
       <label class="check"><input type="checkbox" id="csvSkipFix" checked> <span>Ignorer les lignes au même montant qu'un de mes fixes (ils sont déjà comptés)</span></label>
+      <label class="check"><input type="checkbox" id="csvSkipNear" checked> <span>Ignorer les lignes de même date et même montant qu'une opération déjà notée à la main</span></label>
       <p class="hint" id="csvSummary" role="status"></p>
       <div class="ledger" id="csvPreview"></div>
     </div>
@@ -122,6 +147,29 @@
       <label class="f">Jeton d'accès GitHub<input id="sToken" type="password" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="255"></label>
       <label class="f" id="sPassWrap">Phrase de synchro<input id="sPass" type="password" autocomplete="off" maxlength="256"></label>
       <label class="f" id="sPass2Wrap" hidden>Répète la phrase<input id="sPass2" type="password" autocomplete="off" maxlength="256"></label>
+    </div>
+    <div id="shPhrase" class="stack gap14" hidden>
+      <p class="hint">Tes autres appareils devront ensuite être reconfigurés avec la nouvelle phrase. Si l'ancienne a été découverte, sache que l'historique du dépôt reste lisible avec elle : le plus sûr est alors de repartir d'un nouveau dépôt.</p>
+      <label class="f">Phrase actuelle<input id="phCur" type="password" autocomplete="off" maxlength="256"></label>
+      <label class="f">Nouvelle phrase<input id="phNew" type="password" autocomplete="off" maxlength="256"></label>
+      <label class="f">Répète-la<input id="phNew2" type="password" autocomplete="off" maxlength="256"></label>
+    </div>
+    <div id="shCarry" class="stack gap14" hidden>
+      <p class="hint">Ce qu'il te reste à la fin d'un mois, en positif comme en négatif, s'ajoute au mois suivant.</p>
+      <div class="grid2">
+        <label class="f">À partir de<input id="carFrom" type="month" placeholder="2026-11"></label>
+        <label class="f">Solde au début de ce mois (€, facultatif)<input id="carOpening" inputmode="text" placeholder="ex. 350 ou -120" autocomplete="off"></label>
+      </div>
+    </div>
+    <div id="shAcct" class="stack gap14" hidden>
+      <label class="f">Nom du compte<input id="acName" maxlength="30" placeholder="ex. Livret A" autocomplete="off"></label>
+      <div class="grid2">
+        <label class="f">Suivi à partir de<input id="acFrom" type="month" placeholder="2026-11"></label>
+        <label class="f">Solde au début de ce mois (€)<input id="acOpening" inputmode="text" placeholder="ex. 350 ou -120" autocomplete="off"></label>
+      </div>
+      <label class="f" id="acRealWrap">Solde réel aujourd'hui, pour corriger (€, facultatif)<input id="acReal" inputmode="text" placeholder="ex. 1 234,56" autocomplete="off"></label>
+      <label class="check" id="acBudgetWrap"><input type="checkbox" id="acBudget"> <span>Compter ce compte dans mon reste à vivre</span></label>
+      <p class="hint" id="acHint" hidden></p>
     </div>
     <p class="err" id="shErr" role="alert" hidden></p>
     <div class="actions">
