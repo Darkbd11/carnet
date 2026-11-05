@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Carnet — Mon argent</title>
+<meta name="description" content="Note tes dépenses et rentrées, vois ce qu'il te reste pour vivre jusqu'à la fin du mois.">
+<meta name="theme-color" content="#133C3A">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Carnet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=Instrument+Sans:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div class="app">
+  <header class="top">
+    <div class="brand">Carnet<small>Mon argent</small></div>
+    <div class="month" role="group" aria-label="Changer de mois">
+      <button id="prevM" aria-label="Mois précédent">‹</button>
+      <span id="mLabel" class="num">—</span>
+      <button id="nextM" aria-label="Mois suivant">›</button>
+    </div>
+  </header>
+  <main id="view" class="stack" style="gap:18px"></main>
+  <p class="note" id="storeNote"></p>
+</div>
+
+<button class="fab" id="fab" aria-label="Ajouter une opération"><span>+</span>Ajouter</button>
+<nav class="nav" aria-label="Sections"><div>
+  <button data-tab="mois" aria-current="page">Mon mois</button>
+  <button data-tab="ops">Opérations</button>
+  <button data-tab="budgets">Budgets</button>
+</div></nav>
+
+<div class="veil" id="veil" hidden>
+  <form class="sheet" id="sheet" novalidate>
+    <div class="row"><h3 id="shTitle">Nouvelle opération</h3><button type="button" class="link" id="shClose">Fermer</button></div>
+    <div id="shOp" class="stack" style="gap:14px">
+      <div class="seg" id="shType">
+        <button type="button" data-t="out" aria-pressed="true">Dépense</button>
+        <button type="button" data-t="in" aria-pressed="false">Rentrée d'argent</button>
+      </div>
+      <div class="amount"><input id="fAmount" inputmode="decimal" placeholder="0,00" autocomplete="off" aria-label="Montant"><em>€</em></div>
+      <div class="stack" style="gap:6px"><span class="day" style="padding:0">Catégorie</span><div class="chips" id="fCats"></div></div>
+      <div class="grid2">
+        <label class="f">Libellé<input id="fLabel" placeholder="ex. Courses Lidl" maxlength="60"></label>
+        <label class="f" id="fDateWrap">Date<input id="fDate" type="date"></label>
+      </div>
+    </div>
+    <div id="shBudget" class="stack" hidden>
+      <p class="hint" id="bHint"></p>
+      <div class="amount"><input id="bAmount" inputmode="decimal" placeholder="0" autocomplete="off" aria-label="Plafond mensuel"><em>€ / mois</em></div>
+    </div>
+    <p class="err" id="shErr" hidden></p>
+    <div class="actions">
+      <button type="button" class="btn danger" id="shDel" hidden>Supprimer</button>
+      <button type="submit" class="btn" id="shOk">Ajouter</button>
+    </div>
+  </form>
+</div>
+<div class="toast" id="toast" hidden></div>
+<input type="file" id="importFile" accept="application/json,.json" hidden>
+
+<script src="js/app.js"></script>
+</body>
+</html>
